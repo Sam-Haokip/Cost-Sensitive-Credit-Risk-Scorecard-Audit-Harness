@@ -38,6 +38,13 @@ A near-perfect credit risk model is not an achievement, it's a symptom. The naiv
 
 This is measured, not corrected — the model is trained on a population systematically older than the one it would score in production, and that limitation is stated rather than hidden.
 
+**4. Missingness encodes loan vintage, not just absence — and the mechanism differs by column.** Fourteen bureau-enrichment columns (`open_acc_6m`, `il_util`, `all_util`, …) are **100% missing before 2016 and ~0% after**, because Lending Club introduced the fields partway through. A model can read origination era straight off that pattern, which is a live hazard for temporal validation. Meanwhile six `mths_since_*` columns are missing because *the event never happened to that borrower* — median-imputing them would replace "never delinquent" with "delinquent a while ago" and invert the signal. Same headline percentage, opposite handling. Full taxonomy, with per-year evidence, in [`reports/data_quality.md`](reports/data_quality.md).
+
+| Null rate (%) by issue year | 2013 | 2014 | 2015 | 2016 | 2017 |
+|---|---:|---:|---:|---:|---:|
+| `open_acc_6m` (field introduced) | 100 | 100 | 95 | **0** | **0** |
+| `mths_since_last_delinq` (event never occurred) | 57 | 49 | 48 | 47 | 50 |
+
 ## Target definition
 
 `default = 1` for Charged Off / Default, `0` for Fully Paid. Everything else is excluded from the modelling population entirely:
@@ -77,6 +84,7 @@ features/    feature engineering            (Phase 3)
 models/      training and experiments
 evaluation/  metrics, calibration, cost curves (Phases 3–5)
 fairness/    group metrics and mitigation     (Phase 6)
+reports/     generated analysis output
 ```
 
 ## Reproducing
@@ -88,6 +96,7 @@ pip install -r requirements.txt
 # Download accepted_2007_to_2018Q4.csv from the Kaggle dataset
 # "wordsforthewise/lending-club" and place it in data/raw/
 python -m data.convert_raw          # CSV -> 46 chunked Parquet files (~2 min)
+python -m data.quality_report       # missingness mechanisms, cardinality, coverage
 python -m data.target               # target definition + survivorship table
 python -m models.leakage_experiment # the three-way comparison above
 ```
