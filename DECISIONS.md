@@ -20,6 +20,8 @@ Decisions are listed in the order they were made.
 
 ## 2. Target: resolved loans only, Charged Off vs Fully Paid
 
+> **SUPERSEDED by decision 5.** Kept as the record of what was decided and why it was later overturned. The figures below describe this target, not the one in current use.
+
 **Decision.** `default = 1` for Charged Off / Default, `0` for Fully Paid. All other statuses excluded from the modelling population entirely — not soft-labelled, not imputed, removed.
 
 **Alternative considered.** Redefining the target as "ever 90+ days past due", a real industry practice that treats severe delinquency as a proxy for eventual charge-off. This would pull the 21,467 Late (31-120 days) loans into the positive class and shrink the excluded population.
@@ -100,6 +102,8 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 
 ## Open items
 
-- **Temporal validation is not yet built.** Every number above comes from a random 80/20 split, which on temporally ordered data is inflated. The 0.4064 figure should be expected to fall once time-based splits land, and that gap is itself a planned finding.
-- **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that.
+- **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that, and cohorts after early 2017 remain excluded for lack of maturity.
 - **Free-text and high-cardinality columns are on the allow-list but unused.** `emp_title`, `desc`, `title`, raw `zip_code`.
+- **Loans delinquent but not yet charged off at snapshot count as survivals** under decision 5. About 1.5% of the file; some will eventually charge off, so the measured default rate is slightly conservative.
+- **No hyperparameter search, calibration or unit tests yet.** Every model so far is one fixed gradient-boosting configuration on a 400k subsample, sized to measure effects rather than to be good. Phase 3 onward.
+- **The 18-month window is a parameter, not a finding.** `WINDOW_MONTHS` was chosen from the time-to-default distribution, but no sensitivity analysis across 12 / 18 / 24 has been run.
