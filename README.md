@@ -23,7 +23,7 @@ A near-perfect credit risk model is not an achievement, it's a symptom. The naiv
 
 **1. The leakage gap is large enough to be self-diagnosing.** +0.59 PR-AUC between the naive and disciplined feature sets. Any credit model reporting near-perfect discrimination should be assumed broken until proven otherwise. This is the single most common silent failure in public work on this dataset.
 
-**2. Negative result: Lending Club's own risk grade adds essentially nothing.** `grade`, `sub_grade`, `int_rate` and `installment` are available before funding, so they aren't leakage in the usual sense — but they're outputs of Lending Club's underwriting model, not raw applicant characteristics. Training on them risks re-deriving their decision rather than learning the underlying risk. Testing rather than assuming: adding all four moves PR-AUC from 0.4064 to 0.4092 — **+0.003**. The independently-derived credit-bureau features already capture nearly everything the grade encodes, so excluding them costs almost nothing. The caution was, in the end, cheap to act on.
+**2. Negative result: Lending Club's own risk grade adds essentially nothing.** `grade`, `sub_grade`, `int_rate` and `installment` are available before funding, so they aren't leakage in the usual sense — but they're outputs of Lending Club's underwriting model, not raw applicant characteristics. Training on them risks re-deriving their decision rather than learning the underlying risk. Testing rather than assuming, and across five seeds rather than one: the gain is **+0.0037 mean (sd 0.0017, range +0.0014 to +0.0056)** — consistently positive, so the effect is real, but *smaller than the seed-to-seed spread in the headline PR-AUC itself* (sd 0.0042). The independently-derived credit-bureau features already capture nearly everything the grade encodes. Excluding them is therefore close to free, and the caution costs nothing to act on. Reproduce with `python -m models.seed_stability`.
 
 **3. 40.5% of the dataset cannot be used, and the loss is not random.** Only loans with a resolved outcome can carry a label. Excluding the 913k still-active loans skews the training population toward older cohorts — by 2018, 88% of 36-month loans and 90% of 60-month loans had not yet resolved:
 
@@ -73,6 +73,7 @@ Stated plainly, because they bound what the current numbers mean:
 - **Validation is a random split.** On temporally ordered financial data this inflates performance — a random shuffle lets the model learn from 2018 loans to predict 2015 ones. Time-based splits and a walk-forward backtest are the next phase; the 0.406 figure should be expected to fall.
 - **Survivorship bias is measured, not mitigated.** See finding 3.
 - **The model is deliberately quick.** One gradient-boosting configuration, no hyperparameter search, no calibration, 400k-row subsample. It exists to size the leakage effect, not to be a good model.
+- **Headline PR-AUC is a single-split point estimate.** Across five seeds the clean model ranges 0.3973–0.4064 (sd 0.0042), so treat 0.406 as approximate. Phase 2's walk-forward folds will replace it with a proper distribution.
 - **Free-text and high-cardinality columns are unused.** `emp_title`, `desc`, `title` and raw `zip_code` are on the allow-list but not yet engineered into features.
 - **Proxy fairness only.** The dataset contains no direct protected attributes; the planned audit uses geography and income as imperfect proxies, which is a real limitation of the conclusions it can support.
 
@@ -99,6 +100,7 @@ python -m data.convert_raw          # CSV -> 46 chunked Parquet files (~2 min)
 python -m data.quality_report       # missingness mechanisms, cardinality, coverage
 python -m data.target               # target definition + survivorship table
 python -m models.leakage_experiment # the three-way comparison above
+python -m models.seed_stability     # is the grade/int_rate effect above noise?
 ```
 
 Runs are seeded (`random_state=42`) and dependencies pinned in `requirements.txt`. The raw CSV is ~1.6GB and the Parquet output ~400MB; neither is committed.

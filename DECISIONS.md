@@ -58,7 +58,7 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 
 **Why measured rather than argued.** Both positions are defensible from reasoning alone, so reasoning alone shouldn't decide it.
 
-**Measured cost — a negative result.** Adding all four moves PR-AUC from 0.4064 to 0.4092. **+0.003.** The independently-derived credit-bureau features already capture nearly everything the grade encodes, which makes sense: the same underlying data feeds both. Excluding them costs essentially nothing, so the more conservative choice is also the cheap one. The caution turned out to be almost free — worth knowing, and worth reporting even though it makes the original concern look overstated.
+**Measured cost — a negative result.** Adding all four moves PR-AUC by **+0.0037 on average across five seeds** (sd 0.0017, range +0.0014 to +0.0056; `models/seed_stability.py`). The direction is consistent on every seed, so the effect is genuine rather than noise — but it is smaller than the seed-to-seed variation in the clean model's own PR-AUC (sd 0.0042), which is the honest basis for calling it negligible rather than simply quoting one split. The independently-derived credit-bureau features already capture nearly everything the grade encodes, which makes sense: the same underlying data feeds both. Excluding them costs essentially nothing, so the more conservative choice is also the cheap one. The caution turned out to be almost free — worth knowing, and worth reporting even though it makes the original concern look overstated.
 
 ---
 
