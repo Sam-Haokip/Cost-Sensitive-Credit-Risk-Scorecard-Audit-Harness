@@ -1,4 +1,14 @@
 """
+SUPERSEDED by data/vintage_target.py -- see DECISIONS.md decision 5.
+
+This is the original final-status target. It is kept because DECISIONS.md
+records why it was chosen and why it was later overturned, and because the
+survivorship-bias table it produces is the evidence for that reversal. Nothing
+in the current pipeline imports it. Running it reports figures for the RETIRED
+target definition, not the one in use.
+
+---
+
 Build the binary default-risk target from Lending Club's `loan_status` field.
 
 Decision (full rationale and the alternative it beat: see DECISIONS.md):

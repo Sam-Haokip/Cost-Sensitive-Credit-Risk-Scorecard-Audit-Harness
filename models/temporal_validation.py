@@ -4,15 +4,24 @@ Phase 2: walk-forward validation, and what random splitting was hiding.
 Three regimes, same model, same metrics, same sample sizes -- so the only thing
 varying is how the data is split:
 
-  random     -- shuffle everything, 80/20. What most portfolio projects do.
-                Lets the model learn from 2016 loans to predict 2014 ones.
+  random          -- shuffle everything, 80/20. What most portfolio projects do.
+                     Lets the model learn from 2016 loans to predict 2014 ones.
+                     Reported because it is the practice being critiqued, but it
+                     tests on a mix of all cohorts, so it is NOT a clean
+                     counterfactual to the temporal folds.
 
-  temporal   -- train on every cohort before the test year. The usual "time-based
-                split", and a real improvement over random.
+  random_matched  -- same test set as the temporal folds (one cohort year), but
+                     training drawn randomly from every cohort including the test
+                     year and later. Holds the test population fixed so the only
+                     thing varying is whether training could see the future. This
+                     is the comparison the headline gap should be read from.
 
-  embargoed  -- train only on cohorts whose OUTCOMES were already known at the
-                moment the model would have been fitted. This is the honest one,
-                and it is the regime most implementations skip.
+  temporal        -- train on every cohort before the test year. The usual
+                     "time-based split", and a real improvement over random.
+
+  embargoed       -- train only on cohorts whose OUTCOMES were already known at
+                     the moment the model would have been fitted. The honest one,
+                     and the regime most implementations skip.
 
 Why the embargo matters. Suppose you are underwriting in January 2016. You do
 not yet know the 18-month outcome of a loan issued in 2015 -- it has not matured,
@@ -97,6 +106,18 @@ def run(df):
         if len(emb_train) >= 5000:
             record("embargoed", year, fit_score(emb_train, test))
 
+        # random_matched: the honest counterfactual to `temporal`. SAME test set,
+        # training drawn randomly from every cohort -- including the test year
+        # and later ones -- rather than only from the past. The plain `random`
+        # regime below varies both the training selection AND the test
+        # population (it tests on a mix of all years, while the temporal folds
+        # test on one), which confounds the comparison: is random better because
+        # shuffling helps, or because its test set is an easier mix? This regime
+        # removes that confound by holding the test set fixed, so the only thing
+        # varying is whether training was allowed to see the future.
+        pool = df.drop(test.index)
+        record("random_matched", year, fit_score(_cap(pool, TRAIN_CAP, seed=200 + year), test))
+
     # Random regime: same sizes, ignoring time entirely. One run per fold so the
     # spread is comparable to the temporal regimes' fold-to-fold spread.
     print("random folds (same sizes, time ignored):")
@@ -122,9 +143,14 @@ if __name__ == "__main__":
     print("PR-AUC by regime:")
     print(summary.to_string())
 
-    if {"random", "temporal", "embargoed"} <= set(summary.index):
+    if {"random_matched", "temporal", "embargoed"} <= set(summary.index):
+        rm = summary.loc["random_matched", "mean"]
         print()
-        print(f"random  -> temporal : {summary.loc['temporal','mean'] - summary.loc['random','mean']:+.4f}")
-        print(f"temporal-> embargoed: {summary.loc['embargoed','mean'] - summary.loc['temporal','mean']:+.4f}")
-        print(f"random  -> embargoed: {summary.loc['embargoed','mean'] - summary.loc['random','mean']:+.4f}  (total inflation)")
+        print("Clean comparison (identical test sets, only training selection varies):")
+        print(f"  random_matched -> temporal : {summary.loc['temporal','mean'] - rm:+.4f}")
+        print(f"  random_matched -> embargoed: {summary.loc['embargoed','mean'] - rm:+.4f}")
+        if "random" in summary.index:
+            print()
+            print(f"  (plain `random`, different test population, shown for reference only: "
+                  f"{summary.loc['random','mean']:.4f})")
     print(f"\nwrote {OUT_PATH}")

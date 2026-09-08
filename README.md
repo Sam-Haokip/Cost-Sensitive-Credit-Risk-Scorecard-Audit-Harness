@@ -23,17 +23,20 @@ A near-perfect credit risk model is not an achievement, it's a symptom. The naiv
 
 **1. The leakage gap is large enough to be self-diagnosing.** +0.80 PR-AUC between the naive and disciplined feature sets. Any credit model reporting near-perfect discrimination should be assumed broken until proven otherwise. This is the single most common silent failure in public work on this dataset.
 
-**2. Random splitting doesn't inflate the score much — it erases the variance.** The expected result was that shuffling time away would flatter performance. It barely does: −0.0044 PR-AUC versus a proper temporal split, smaller than the temporal folds' own spread. What random splitting actually destroys is any sense of *stability*:
+**2. Random splitting barely inflates the score. What it hides is per-cohort variability — and the mechanism is the evaluation scheme, not the training scheme.** Four regimes, identical sample sizes:
 
-| Split regime | PR-AUC | sd across folds |
-|---|---:|---:|
-| Random (time ignored) | 0.1869 | **0.0020** |
-| Temporal (train on earlier cohorts) | 0.1825 | **0.0191** |
-| Embargoed (only matured outcomes) | 0.1626 | **0.0279** |
+| Split regime | PR-AUC | sd across folds | Tests on |
+|---|---:|---:|---|
+| Random (plain 80/20) | 0.1869 | **0.0020** | mixed pool, all cohorts |
+| Random, test set matched | 0.1862 | **0.0200** | one cohort year |
+| Temporal (train on earlier cohorts only) | 0.1825 | **0.0191** | one cohort year |
+| Embargoed (only matured outcomes) | 0.1626 | **0.0279** | one cohort year |
 
-Random splitting reports "0.187 ± 0.002" — ten splits, all agreeing, apparently rock solid. The model's real performance swings roughly ten times that much across time periods. The failure mode is false confidence, which is worse than an inflated number because you'd deploy on it.
+Letting training see the future costs almost nothing: **−0.0037** with the test set held fixed. That is the clean number, because the plain random regime varies both the training selection *and* the test population, which confounds the comparison.
 
-**3. The honest constraint costs more than the split type.** The *embargoed* regime trains only on cohorts whose 18-month outcomes were already known when the model would have been fitted — to predict year Y, train on loans issued before January of Y−2. That's the constraint a real underwriting deployment faces, and almost nobody implements it. On the two folds where training sizes are matched, it costs **−0.0084 PR-AUC**. (The raw four-fold gap looks like −0.0199, but the 2014 and 2015 embargoed folds had 3.8× and 1.6× less training data, so most of that is sample size, not the embargo.)
+An earlier version of this analysis reported the sd difference (0.0020 vs 0.0191) as evidence that "random splitting erases the variance". That attributed to the training scheme what is actually caused by the evaluation scheme: hold the test set fixed and random training shows sd 0.0200, essentially identical to temporal's 0.0191. The practical warning survives in corrected form — a practitioner running one random 80/20 reports a single confident number and never learns that per-cohort performance ranges **0.16 to 0.20** — but the cause is evaluating on a mixed pool, not shuffling the training data.
+
+**3. The honest constraint costs more than the split type.** The *embargoed* regime trains only on cohorts whose 18-month outcomes were already known when the model would have been fitted — to predict year Y, train on loans issued before January of Y−2. That's the constraint a real underwriting deployment faces, and almost nobody implements it. Against the matched-test-set random baseline it costs **−0.0236 PR-AUC**, roughly six times the cost of temporal splitting alone. On the two folds where training sizes are matched against `temporal`, the embargo alone accounts for **−0.0084**. (The raw four-fold gap looks like −0.0199, but the 2014 and 2015 embargoed folds had 3.8× and 1.6× less training data, so most of that is sample size, not the embargo.)
 
 **4. Cohorts weren't comparable, and fixing it grew the dataset.** Defaults resolve fast; repayments resolve slowly. So a partly-matured cohort is enriched with whichever outcome finishes sooner — the 2016 and 2017 cohorts showed ~20% default against 12–15% for fully-resolved years, then 2018 fell *back* to 13%. The bias reverses direction with cohort age. Replacing "did it ever default" with "did it default within 18 months" flattens that to 6.9–9.8%, a shape consistent with a real credit cycle. It also *added* 100,000 loans, because a 2016 loan still performing in 2019 demonstrably did not default within 18 months — a known outcome the old target was discarding as unknown.
 
@@ -58,7 +61,7 @@ Window length chosen from the data, not convention: median time from origination
 
 ## Validation design
 
-Four walk-forward folds (test years 2014–2017), three regimes at identical sample sizes so only the split varies. Metrics reported as a distribution across folds, never a single number. Results in [`reports/temporal_validation.csv`](reports/temporal_validation.csv).
+Four walk-forward folds (test years 2014–2017), four regimes at identical sample sizes. The `random_matched` regime exists specifically so the headline gap is read off a comparison where only the training selection varies; plain `random` is reported for reference as the practice being critiqued, but its test population differs and it should not be used for the gap. Metrics reported as a distribution across folds, never a single number. Results in [`reports/temporal_validation.csv`](reports/temporal_validation.csv).
 
 Covariate drift between the 2013–14 baseline and later cohorts: **18 of 97 features show significant drift (PSI > 0.25), 12 moderate, 67 stable.** Nulls are carried as an explicit PSI bin — without that, field introduction is invisible, and it is the largest distributional shift in the dataset. The one drifter that isn't a missingness artifact is `initial_list_status` (PSI 0.50): whole-loan listings went from 7% of originations in 2012 to 77% in 2016, a genuine platform change.
 
