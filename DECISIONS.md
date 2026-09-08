@@ -62,8 +62,26 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 
 ---
 
+## 5. Replacing the target with a fixed 18-month performance window
+
+**Decision.** Supersede decision 2. A loan is labelled `1` if it charged off having stopped paying within **18 months of origination**, `0` if it survived that window (repaid, still performing, or charged off only afterwards). A loan is eligible only if observed for 18 + 6 months, the extra six covering Lending Club's ~120-150 day delinquency-to-charge-off lag. Implemented in `data/vintage_target.py`.
+
+**What forced the revision.** Decision 2's "final status" target makes cohorts non-comparable, and Phase 2 is built on comparing cohorts. Defaults resolve fast and full repayments resolve slowly, so a partly-resolved cohort is enriched with whichever outcome finishes sooner. Measured that way, the 2016 and 2017 36-month cohorts show ~20% default against 12-15% for every fully-resolved year before them — and the 2018 cohort drops back to 13%, because at under twelve months of age the pool is dominated by early full repayments instead. The bias is not merely present, it reverses direction with cohort age. A naive time-based split would have reported all of that as credit drift.
+
+**Alternatives considered.** (a) Restrict to fully-resolved cohorts only — clean, but discards 2016 onward and leaves too few cohorts for a walk-forward backtest. (b) Proceed naively and document the bias — what most public work does, and now demonstrably wrong.
+
+**Why 18 months, measured rather than assumed.** Time from origination to final payment on charged-off 36-month loans (2012-2014 cohorts, fully resolved so the timing itself isn't censored) has a median of 17 months. Cumulative share of eventual charge-offs caught: 34% by month 12, **56% by month 18**, 76% by 24, 92% by 30. Longer windows capture more defaults but cost usable cohorts, since every loan needs window + lag months of observation. 18 captures a majority while preserving 2012 to early-2017 for folds. Set by `WINDOW_MONTHS`; changing it is one line.
+
+**Measured effect.** Cohort default rate for 36-month loans goes from a 12.3%-20.0% swing under decision 2 to 6.9%-9.8% under the window — a gentle rise peaking in 2016 and easing in 2017, consistent with a real credit cycle rather than an artefact. 60-month loans sit consistently above 36-month at every vintage (13.3% vs 9.8% in 2016), a sanity check that real risk is still being captured.
+
+**Cost, and an unexpected gain.** The target now means "defaulted early" rather than "ever defaulted", so it answers a narrower question and the base rate falls from 19.97% to 9.63%. But the eligible population *grows*, from 1,345,350 to 1,445,560, because 265,871 still-open loans become usable: a loan still performing well past the window demonstrably did not default inside it. Decision 2 was discarding known outcomes as unknown, so this partly mitigates the Phase 1 survivorship bias rather than only measuring it.
+
+**Known caveat.** Loans sitting delinquent-but-not-yet-charged-off at snapshot are counted as survivals. They are ~1.5% of the file and some will eventually charge off, so the measured rate is very slightly conservative.
+
+---
+
 ## Open items
 
 - **Temporal validation is not yet built.** Every number above comes from a random 80/20 split, which on temporally ordered data is inflated. The 0.4064 figure should be expected to fall once time-based splits land, and that gap is itself a planned finding.
-- **Survivorship bias is measured, not mitigated.** No reweighting or inverse-probability correction has been attempted.
+- **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that.
 - **Free-text and high-cardinality columns are on the allow-list but unused.** `emp_title`, `desc`, `title`, raw `zip_code`.
