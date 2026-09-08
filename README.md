@@ -32,11 +32,24 @@ A near-perfect credit risk model is not an achievement, it's a symptom. The naiv
 | Temporal (train on earlier cohorts only) | 0.1825 | **0.0191** | one cohort year |
 | Embargoed (only matured outcomes) | 0.1626 | **0.0279** | one cohort year |
 
-Letting training see the future costs almost nothing: **−0.0037** with the test set held fixed. That is the clean number, because the plain random regime varies both the training selection *and* the test population, which confounds the comparison.
+Letting training see the future costs almost nothing: **−0.0037** with the test set held fixed. Because the regimes share an identical test set within each fold, that difference is *paired* — cohort variance cancels, and the noise drops roughly tenfold: **paired sd 0.0021** against unpaired fold-to-fold sds of 0.019–0.020, with all four folds agreeing in sign (−0.0040, −0.0043, −0.0058, −0.0007). Quoting a difference of means against a spread five times the effect would have invited the fair question of whether it differs from zero at all; paired, it clearly does.
 
 An earlier version of this analysis reported the sd difference (0.0020 vs 0.0191) as evidence that "random splitting erases the variance". That attributed to the training scheme what is actually caused by the evaluation scheme: hold the test set fixed and random training shows sd 0.0200, essentially identical to temporal's 0.0191. The practical warning survives in corrected form — a practitioner running one random 80/20 reports a single confident number and never learns that per-cohort performance ranges **0.16 to 0.20** — but the cause is evaluating on a mixed pool, not shuffling the training data.
 
-**3. The honest constraint costs more than the split type.** The *embargoed* regime trains only on cohorts whose 18-month outcomes were already known when the model would have been fitted — to predict year Y, train on loans issued before January of Y−2. That's the constraint a real underwriting deployment faces, and almost nobody implements it. Against the matched-test-set random baseline it costs **−0.0236 PR-AUC**, roughly six times the cost of temporal splitting alone. On the two folds where training sizes are matched against `temporal`, the embargo alone accounts for **−0.0084**. (The raw four-fold gap looks like −0.0199, but the 2014 and 2015 embargoed folds had 3.8× and 1.6× less training data, so most of that is sample size, not the embargo.)
+**3. The honest constraint costs far more than the split type — and it costs most where the data drifts fastest.** The *embargoed* regime trains only on cohorts whose 18-month outcomes were already known when the model would have been fitted — to predict year Y, train on loans issued before January of Y−2. That's the constraint a real underwriting deployment faces, and almost nobody implements it.
+
+Isolating it properly required matching training sizes, because the raw gaps (−0.0344, −0.0282, −0.0097, −0.0071) track how much embargoed data each fold had. Capping both regimes at the embargo pool's size, all four folds:
+
+| Fold | n (both) | Raw gap | Size-matched gap |
+|---|---:|---:|---:|
+| 2014 | 39,786 | −0.0344 | **−0.0172** |
+| 2015 | 93,153 | −0.0282 | **−0.0184** |
+| 2016 | 150,000 | −0.0097 | −0.0097 |
+| 2017 | 150,000 | −0.0071 | −0.0071 |
+
+**Embargo penalty: −0.0131 (sd 0.0055), all four folds, same sign** — about 3.5× the cost of temporal splitting alone. Sample size explained roughly half the 2014 gap and a third of 2015's, but not the rest: even at equal n, the early folds cost **2.1× more** than the late ones (−0.0178 vs −0.0084). A 24-month embargo forces the 2014 fold to train on pre-2012 loans — a very different population, missing the bureau fields entirely — while 2016 only reaches back to 2013. **The embargo hurts most exactly where the drift analysis says the population moved most.**
+
+Confirmed not to be a data-volume artifact: on the 2016 fold the gap is flat across training sizes (−0.0094 at 25k, −0.0097 at 150k). Reproduce with `python -m models.validation_robustness`.
 
 **4. Cohorts weren't comparable, and fixing it grew the dataset.** Defaults resolve fast; repayments resolve slowly. So a partly-matured cohort is enriched with whichever outcome finishes sooner — the 2016 and 2017 cohorts showed ~20% default against 12–15% for fully-resolved years, then 2018 fell *back* to 13%. The bias reverses direction with cohort age. Replacing "did it ever default" with "did it default within 18 months" flattens that to 6.9–9.8%, a shape consistent with a real credit cycle. It also *added* 100,000 loans, because a 2016 loan still performing in 2019 demonstrably did not default within 18 months — a known outcome the old target was discarding as unknown.
 
@@ -113,6 +126,7 @@ python -m models.leakage_experiment # the three-way leakage comparison
 python -m models.seed_stability     # is the grade/int_rate effect above noise?
 python -m models.temporal_validation# walk-forward folds, three split regimes
 python -m evaluation.drift          # PSI / KS drift table
+python -m models.validation_robustness # paired folds + embargo robustness checks
 ```
 
 Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6GB and the Parquet output ~400MB; neither is committed. `LC_RAW_CSV` and `LC_PARQUET_DIR` override the default data locations.
