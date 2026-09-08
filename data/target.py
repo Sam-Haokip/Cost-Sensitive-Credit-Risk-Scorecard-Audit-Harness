@@ -22,7 +22,7 @@ import os
 
 import pandas as pd
 
-PARQUET_DIR = "data/raw/parquet"
+PARQUET_DIR = os.environ.get("LC_PARQUET_DIR", "data/raw/parquet")
 
 POSITIVE_STATUSES = {"Charged Off", "Default"}
 NEGATIVE_STATUSES = {"Fully Paid"}
@@ -30,6 +30,11 @@ NEGATIVE_STATUSES = {"Fully Paid"}
 
 def load_status_columns(parquet_dir: str = PARQUET_DIR) -> pd.DataFrame:
     files = sorted(glob.glob(os.path.join(parquet_dir, "part_*.parquet")))
+    if not files:
+        raise SystemExit(
+            f"No Parquet files found in: {parquet_dir}\n"
+            "Run the conversion step first:  python -m data.convert_raw"
+        )
     frames = [pd.read_parquet(f, columns=["loan_status", "issue_d", "term"]) for f in files]
     return pd.concat(frames, ignore_index=True)
 

@@ -25,6 +25,7 @@ CSV-to-Parquet conversion: convert to a cheap dtype BEFORE combining chunks,
 not after.
 """
 import glob
+import os
 
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -34,7 +35,7 @@ from sklearn.model_selection import train_test_split
 from data.feature_audit import FEATURE_AUDIT
 from data.target import NEGATIVE_STATUSES, POSITIVE_STATUSES
 
-PARQUET_DIR = "data/raw/parquet"
+PARQUET_DIR = os.environ.get("LC_PARQUET_DIR", "data/raw/parquet")
 
 # not a leakage question -- just not feature-engineered yet (free text,
 # high-cardinality raw zip, a secondary date field that's ~95% null anyway)
@@ -75,6 +76,11 @@ def load_master():
     """Load, label, and dtype-cast every needed column, chunk by chunk, so
     peak memory never holds more than one file's worth of raw strings."""
     files = sorted(glob.glob(f"{PARQUET_DIR}/part_*.parquet"))
+    if not files:
+        raise SystemExit(
+            f"No Parquet files found in: {PARQUET_DIR}\n"
+            "Run the conversion step first:  python -m data.convert_raw"
+        )
     needed = sorted(set(ALL_RAW_COLS) | {"loan_status", "issue_d", "earliest_cr_line"} | LEAKAGE_DATE_COLS)
 
     chunks = []

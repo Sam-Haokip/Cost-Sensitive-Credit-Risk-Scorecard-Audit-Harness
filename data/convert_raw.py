@@ -36,6 +36,15 @@ SRC = os.environ.get("LC_RAW_CSV", "data/raw/accepted_2007_to_2018Q4.csv")
 OUT_DIR = "data/raw/parquet"
 CHUNKSIZE = 50_000
 
+if not os.path.exists(SRC):
+    raise SystemExit(
+        f"Source CSV not found at: {SRC}\n\n"
+        "Download 'accepted_2007_to_2018Q4.csv' from the Kaggle dataset\n"
+        "  https://www.kaggle.com/datasets/wordsforthewise/lending-club\n"
+        "and place it at data/raw/, or point LC_RAW_CSV at wherever you keep it:\n"
+        "  LC_RAW_CSV=/path/to/accepted_2007_to_2018Q4.csv python -m data.convert_raw"
+    )
+
 os.makedirs(OUT_DIR, exist_ok=True)
 
 header = pd.read_csv(SRC, nrows=0)
