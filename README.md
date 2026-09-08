@@ -50,7 +50,7 @@ Resulting population: **1,345,350 loans, 19.97% default rate.**
 
 ## The leakage audit
 
-All 151 raw columns classified individually with a stated reason each — an allow-list, not a drop-list. Any column that cannot be justified as available pre-decision is cut. Full detail in [`data/feature_audit.py`](data/feature_audit.py).
+All 151 raw columns classified individually with a stated reason each — an allow-list, not a drop-list. Any column that cannot be justified as available pre-decision is cut. Full detail in [`data/feature_audit.py`](data/feature_audit.py); the reasoning behind this and every other modelling decision is in [`DECISIONS.md`](DECISIONS.md).
 
 | Decision | Count | What it covers |
 |---|---:|---|
@@ -82,6 +82,7 @@ fairness/    group metrics and mitigation     (Phase 6)
 ## Reproducing
 
 ```bash
+# Python 3.10+
 pip install -r requirements.txt
 
 # Download accepted_2007_to_2018Q4.csv from the Kaggle dataset

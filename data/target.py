@@ -1,7 +1,7 @@
 """
 Build the binary default-risk target from Lending Club's `loan_status` field.
 
-Decision (full discussion logged in the project's decisions log):
+Decision (full rationale and the alternative it beat: see DECISIONS.md):
 - Positive class (default=1): Charged Off, Default.
 - Negative class (default=0): Fully Paid.
 - Excluded entirely (no label assigned, row dropped from modeling):
