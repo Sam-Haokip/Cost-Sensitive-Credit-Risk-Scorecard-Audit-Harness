@@ -45,9 +45,16 @@ _OUTCOME_COLS = ["loan_status", "last_pymnt_d", "last_credit_pull_d"]
 FEATURE_COLS = KEEP_COLS + ["credit_history_months"]
 
 
-def load_modelling_frame(parquet_dir: str = PARQUET_DIR, window: int = WINDOW_MONTHS) -> pd.DataFrame:
+def load_modelling_frame(parquet_dir: str = PARQUET_DIR, window: int = WINDOW_MONTHS,
+                         extra_cols=None, extra_categorical=None) -> pd.DataFrame:
     """Returns eligible loans with allow-list features, `default_window`, and
-    `issue_d` / `issue_year` for temporal splitting."""
+    `issue_d` / `issue_year` for temporal splitting.
+
+    `extra_cols` carries additional RAW columns through unchanged -- used only by
+    the leakage experiment, which needs the excluded columns precisely so it can
+    measure what including them would have cost. Nothing else should pass it."""
+    extra_cols = list(extra_cols or [])
+    extra_categorical = set(extra_categorical or [])
     files = sorted(glob.glob(os.path.join(parquet_dir, "part_*.parquet")))
     if not files:
         raise SystemExit(
@@ -55,7 +62,8 @@ def load_modelling_frame(parquet_dir: str = PARQUET_DIR, window: int = WINDOW_MO
             "Run the conversion step first:  python -m data.convert_raw"
         )
 
-    needed = sorted(set(KEEP_COLS) | set(_OUTCOME_COLS) | {"issue_d", "earliest_cr_line"})
+    needed = sorted(set(KEEP_COLS) | set(extra_cols) | set(_OUTCOME_COLS)
+                    | {"issue_d", "earliest_cr_line"})
 
     # Snapshot date must be computed over the WHOLE file, before any filtering.
     snap = None
@@ -94,13 +102,14 @@ def load_modelling_frame(parquet_dir: str = PARQUET_DIR, window: int = WINDOW_MO
             (issue[eligible] - earliest[eligible]).dt.days / 30.44
         ).astype("float32")
 
-        for col in NUMERIC:
+        extra_numeric = [x for x in extra_cols if x not in extra_categorical]
+        for col in list(NUMERIC) + extra_numeric:
             c[col] = pd.to_numeric(c[col], errors="coerce").astype("float32")
 
-        chunks.append(c[FEATURE_COLS + ["issue_d", "default_window"]])
+        chunks.append(c[FEATURE_COLS + extra_cols + ["issue_d", "default_window"]])
 
     df = pd.concat(chunks, ignore_index=True)
-    for col in CATEGORICAL:
+    for col in set(CATEGORICAL) | extra_categorical:
         df[col] = df[col].astype("category")
     df["issue_year"] = df["issue_d"].dt.year.astype("int16")
     return df

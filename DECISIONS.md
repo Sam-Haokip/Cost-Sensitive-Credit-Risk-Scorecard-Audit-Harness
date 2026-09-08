@@ -44,7 +44,7 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 
 **Result.** 101 kept, 38 dropped as leakage, 8 dropped as identifiers/constants/redundant/label-source, 4 flagged for review (decision 4).
 
-**Measured cost of getting this wrong.** Same model, same split, trained on all available columns versus the allow-list: PR-AUC 0.9973 vs 0.4064. A +0.59 gap. A near-perfect credit risk model is a symptom, not an achievement — the naive version is reading the outcome, not predicting it.
+**Measured cost of getting this wrong.** Same model, same split, trained on all available columns versus the allow-list: PR-AUC 0.9972 vs 0.1944 on the current (decision 5) target. A +0.80 gap. A near-perfect credit risk model is a symptom, not an achievement — the naive version is reading the outcome, not predicting it.
 
 ---
 
@@ -58,7 +58,11 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 
 **Why measured rather than argued.** Both positions are defensible from reasoning alone, so reasoning alone shouldn't decide it.
 
-**Measured cost — a negative result.** Adding all four moves PR-AUC by **+0.0037 on average across five seeds** (sd 0.0017, range +0.0014 to +0.0056; `models/seed_stability.py`). The direction is consistent on every seed, so the effect is genuine rather than noise — but it is smaller than the seed-to-seed variation in the clean model's own PR-AUC (sd 0.0042), which is the honest basis for calling it negligible rather than simply quoting one split. The independently-derived credit-bureau features already capture nearly everything the grade encodes, which makes sense: the same underlying data feeds both. Excluding them costs essentially nothing, so the more conservative choice is also the cheap one. The caution turned out to be almost free — worth knowing, and worth reporting even though it makes the original concern look overstated.
+**Measured cost — REVISED after decision 5.** Adding all four moves PR-AUC by **+0.0110 on average across five seeds** (sd 0.0026, range +0.0076 to +0.0143; `models/seed_stability.py`), positive on every seed, against a seed-to-seed spread in the baseline of only 0.0020. The effect is roughly five times its own measurement noise — about a 6% relative gain on a 0.1896 baseline.
+
+**This overturns an earlier conclusion, and the correction is the point.** Measured on the retired decision-2 target, the same comparison gave +0.0037 against baseline noise of 0.0042 — smaller than the measurement error, which was the basis for calling the exclusion costless. That claim did not survive re-measurement on the current target. The columns are still excluded, on the circularity argument, which stands on its own: a model that re-derives Lending Club's grade has learned their decision, not the underlying risk, and would not transfer to a setting where their grade does not exist. But the decision now carries a real and stated price rather than a free one.
+
+**Process note.** This was only caught because every experiment was re-run against the new target rather than leaving old numbers in place beside new ones. A README quoting two target definitions would have been confusing; one quoting a conclusion that its own current code contradicts would have been worse.
 
 ---
 
@@ -77,6 +81,20 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 **Cost, and an unexpected gain.** The target now means "defaulted early" rather than "ever defaulted", so it answers a narrower question and the base rate falls from 19.97% to 9.63%. But the eligible population *grows*, from 1,345,350 to 1,445,560, because 265,871 still-open loans become usable: a loan still performing well past the window demonstrably did not default inside it. Decision 2 was discarding known outcomes as unknown, so this partly mitigates the Phase 1 survivorship bias rather than only measuring it.
 
 **Known caveat.** Loans sitting delinquent-but-not-yet-charged-off at snapshot are counted as survivals. They are ~1.5% of the file and some will eventually charge off, so the measured rate is very slightly conservative.
+
+---
+
+## 6. Walk-forward validation with an outcome-availability embargo
+
+**Decision.** Evaluate with four walk-forward folds (test years 2014–2017) under three regimes at identical sample sizes: random, temporal, and embargoed. The embargoed regime is the one reported as honest — it trains only on cohorts whose 18-month outcomes were already known at the moment the model would have been fitted, i.e. to predict year Y, train on loans issued before January of Y−2. Implemented in `models/temporal_validation.py`.
+
+**Alternative considered.** A plain time-based split — train on everything before the test year. This is the standard "temporal validation" and a real improvement over random shuffling, but it is still optimistic: in January 2016 you do not know the 18-month outcome of a 2015 loan, because it has not matured. Training on it uses information you could not have had.
+
+**Measured result, and it was not the expected one.** Random versus temporal costs only −0.0044 PR-AUC, *smaller than the temporal folds' own fold-to-fold spread*. The conventional claim that random splitting massively inflates performance does not hold strongly here. What random splitting destroys is the variance: sd 0.0020 across random folds against 0.0191 temporal and 0.0279 embargoed. It reports a stable model when performance actually swings roughly ten times that much across time periods. False confidence, not an inflated score.
+
+**Embargo cost, with the confound removed.** −0.0084 PR-AUC, measured only on the 2016 and 2017 folds where training sizes match. The raw four-fold gap of −0.0199 is not usable: the 2014 and 2015 embargoed folds had 3.8× and 1.6× less training data than their temporal counterparts, so most of that gap is sample size rather than the embargo.
+
+**Companion drift analysis** (`evaluation/drift.py`): 18 of 97 features show significant drift (PSI > 0.25) between the 2013–14 baseline and later cohorts. Fourteen are the vintage-driven columns identified in Phase 1, at PSI ≈ 18 with undefined KS — they moved entirely in availability, not in reported values. Nulls are carried as an explicit PSI bin; without that, field introduction is invisible to the calculation.
 
 ---
 
