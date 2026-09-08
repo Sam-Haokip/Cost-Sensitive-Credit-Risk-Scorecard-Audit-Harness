@@ -1,13 +1,21 @@
+# raw & processed data (large, not for git)
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
-*.csv
-*.csv.gz
-*.parquet
+
+# ...but generated analysis output belongs in the repo
+!reports/**
+
+# credentials
+kaggle.json
+.env
+
+# python
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .venv/
-.env
+
+# figures are regenerable
 reports/figures/*.png
