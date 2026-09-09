@@ -19,3 +19,6 @@ __pycache__/
 
 # figures are regenerable
 reports/figures/*.png
+
+# macOS
+.DS_Store
