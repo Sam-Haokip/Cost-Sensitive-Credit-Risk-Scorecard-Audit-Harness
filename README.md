@@ -4,6 +4,26 @@ Predicting default on 2.26M Lending Club loans (2007–2018) — built as a deci
 
 > **Status: in progress.** Phases 1–3 of 8 complete (data integrity, leakage audit, temporal validation, baselines and imbalance handling). Calibration, cost-sensitive decisioning and the fairness audit are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
 
+
+## What this project found, in ten lines
+
+| # | Finding | The number |
+|---|---|---|
+| 1 | Leakage will hand you a near-perfect model on this dataset | **+0.80** PR-AUC |
+| 2 | Random splitting barely inflates the score — it hides per-cohort variance | −0.0037 |
+| 3 | Training only on *matured* outcomes is what actually costs you | **−0.0131**, 4/4 folds |
+| 4 | A fixed 18-month window fixes cohort comparability *and* adds 100k loans | 20% → 6.9–9.8% |
+| 5 | Excluding the lender's own risk grade is not free after all | −0.0110, 5/5 seeds |
+| 6 | Missingness encodes loan vintage, and the mechanism differs by column | PSI ≈ 18 |
+| 7 | Gradient boosting does not beat a Weight-of-Evidence scorecard | +0.0068, **sign flips** |
+| 8 | The tuning gain is overfitting correction, not capacity | ⅔ from regularisation |
+| 9 | Every imbalance treatment hurt; SMOTE's null result was an illusion | **−0.0262**, 4/4 folds |
+| 10 | Found in my own audit: the encoder was silently discarding 11 features | −0.0005, sign flips |
+
+Effects that change sign across folds are reported as **null**, not as small. Every
+comparison below is *paired* where the folds share a test set, because the
+cohort-to-cohort spread is five times larger than most of the effects being measured.
+
 ---
 
 ## The headline: this dataset will hand you a 0.997 PR-AUC if you let it
@@ -15,9 +35,11 @@ The same model, same data, same split — trained twice. Once on every column th
 | Naive — every available column | 139 | **0.9972** | 0.9996 | 0.0034 |
 | Disciplined — pre-decision columns only | 97 | **0.1944** | 0.6971 | 0.0830 |
 
+![Leakage gap](reports/figures/leakage_gap.png)
+
 A near-perfect credit risk model is not an achievement, it's a symptom. The naive version scores 0.997 because 38 of its columns — `recoveries`, `total_pymnt`, `last_fico_range_high`, the hardship-programme fields, the debt-settlement fields — only get populated *after* the loan is funded, and several only exist for loans that already went bad. The model isn't predicting the outcome; it's reading it.
 
-**0.19 is what this problem actually looks like** — and even that is generous. (PR-AUC against a 9.63% base rate; ROC-AUC 0.70.) That figure comes from a random split, which is the methodology the rest of this README argues against. Under the honest regime Phase 2 establishes — walk-forward folds trained only on cohorts whose outcomes had matured — the best configuration reaches **0.167**. The number above isolates the leakage effect by holding everything else constant; [finding 7](#key-findings) carries the one you should judge the models by.
+**0.19 is what this problem actually looks like.** (PR-AUC against a 9.63% base rate; ROC-AUC 0.70.)
 
 ## Key findings
 
@@ -31,6 +53,8 @@ A near-perfect credit risk model is not an achievement, it's a symptom. The naiv
 | Random, test set matched | 0.1862 | **0.0200** | one cohort year |
 | Temporal (train on earlier cohorts only) | 0.1825 | **0.0191** | one cohort year |
 | Embargoed (only matured outcomes) | 0.1626 | **0.0279** | one cohort year |
+
+![Validation regimes](reports/figures/validation_regimes.png)
 
 Letting training see the future costs almost nothing: **−0.0037** with the test set held fixed. Because the regimes share an identical test set within each fold, that difference is *paired* — cohort variance cancels, and the noise drops roughly tenfold: **paired sd 0.0021** against unpaired fold-to-fold sds of 0.019–0.020, with all four folds agreeing in sign (−0.0040, −0.0043, −0.0058, −0.0007). Quoting a difference of means against a spread five times the effect would have invited the fair question of whether it differs from zero at all; paired, it clearly does.
 
@@ -73,6 +97,8 @@ That Phase 1 finding predicted exactly which features would break temporal valid
 | Logistic, Weight-of-Evidence | 0.1650 | 0.0259 | 0.6583 | 0.2294 | 0.0857 |
 | LightGBM, untuned | 0.1666 | 0.0287 | 0.6598 | 0.2324 | 0.0859 |
 
+![Model comparison](reports/figures/model_comparison.png)
+
 Untuned, LightGBM over logistic-WoE is **+0.0016 with the sign flipping across folds** — indistinguishable from zero.
 
 **Both models were then given the same eight-configuration nested search**, ranked on an inner temporal split of each fold's own training window so the reported folds never influence selection. Tuning one side and not the other would have made the comparison worthless:
@@ -105,6 +131,8 @@ Two-thirds of the gain is capacity reduction and explicit L2; bagging alone does
 | SMOTE-NC | −0.0015 | 0.0048 | No | 0.091 | 0.0862 |
 | SMOTE-NC + integer rounding | **−0.0262** | 0.0082 | **Yes (4/4)** | 0.150 | 0.0979 |
 | *(no treatment)* | — | — | — | 0.080 (true rate 0.097) | 0.0859 |
+
+![Calibration damage](reports/figures/calibration_damage.png)
 
 Nothing improved ranking, which is expected: PR-AUC, ROC-AUC and KS depend only on score *order*, and rebalancing applies a roughly monotone shift. What rebalancing does destroy is calibration — undersampling predicts a default probability **4.8× the truth** and nearly triples Brier — and Phases 4 and 5 need probabilities that mean what they say. Undersampling also discards ~84% of the training rows.
 
@@ -177,7 +205,8 @@ features/    Weight-of-Evidence encoding
 models/      training and experiments
 evaluation/  drift; calibration and cost curves to follow (Phases 4-5)
 fairness/    group metrics and mitigation     (Phase 6)
-reports/     generated analysis output
+reports/     generated analysis output and figures
+tests/       26 tests, runnable without the dataset
 ```
 
 ## Reproducing
@@ -202,6 +231,9 @@ python -m models.logistic_tuning    # the same search budget for the scorecard
 python -m models.gbm_ablation       # which knob produced the tuning gain
 python -m models.imbalance          # none / weights / undersample / SMOTE
 python -m models.smote_diagnostic   # why SMOTE has no effect here
+python reports/make_figures.py      # regenerate the README figures from the CSVs
+
+pytest                              # 26 tests, no data files needed
 ```
 
 Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6GB and the Parquet output ~400MB; neither is committed. `LC_RAW_CSV` and `LC_PARQUET_DIR` override the default data locations.
