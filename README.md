@@ -2,7 +2,7 @@
 
 Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a model card) rather than a model that stops at reporting an AUC.
 
-> **Status: in progress.** Phases 1–2 of 8 complete (data integrity, leakage audit, temporal validation). Calibration, cost-sensitive decisioning and the fairness audit are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
+> **Status: in progress.** Phases 1–3 of 8 complete (data integrity, leakage audit, temporal validation, baselines and imbalance handling). Calibration, cost-sensitive decisioning and the fairness audit are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
 
 ---
 
@@ -64,6 +64,45 @@ Confirmed not to be a data-volume artifact: on the 2016 fold the gap is flat acr
 
 That Phase 1 finding predicted exactly which features would break temporal validation. The drift analysis confirms it independently: those same fourteen columns register **PSI ≈ 18** against a "significant" threshold of 0.25, with *undefined* KS — meaning they moved entirely in availability, not in the values they report. Full taxonomy in [`reports/data_quality.md`](reports/data_quality.md), full drift table in [`reports/drift.md`](reports/drift.md).
 
+**7. Gradient boosting does not beat a logistic regression here, and tuning does not rescue it.** Four models on the embargoed folds:
+
+| Model | PR-AUC | sd | ROC-AUC | KS | Brier |
+|---|---:|---:|---:|---:|---:|
+| Trivial (majority class) | 0.0974 | 0.0086 | 0.5000 | 0.0000 | 0.0882 |
+| Logistic, median-impute + one-hot | 0.1634 | 0.0298 | 0.6577 | 0.2306 | 0.0864 |
+| Logistic, Weight-of-Evidence | 0.1656 | 0.0256 | 0.6588 | 0.2301 | 0.0857 |
+| LightGBM, untuned | 0.1666 | 0.0287 | 0.6598 | 0.2324 | 0.0859 |
+
+LightGBM over logistic-WoE is **+0.0011 with the sign flipping across folds** — indistinguishable from zero. A nested hyperparameter search (tuning on an inner temporal split, so the reported folds never influence selection) gains **+0.0059 (paired sd 0.0038)** over the untuned booster, which lifts the gap over logistic-WoE to **+0.0069 (paired sd 0.0058) — still with the sign flipping**, on the 2014 fold. Four folds cannot establish an effect that small.
+
+The honest summary: **on this problem, a 1960s-vintage scorecard technique matches a modern gradient booster**, and the booster costs interpretability a credit regulator would ask for. The trivial model makes the companion point — it scores **90.3% accuracy** while catching zero defaults, which is why accuracy appears nowhere else in this README.
+
+**8. The tuning gain is overfitting correction, not capacity.** "Tuning helped" explains nothing, so the gain was decomposed. Every configuration the search selected used `num_leaves=15` against a default of 31 and `min_child_samples` of 100–200 against 20; the grid also carried row and column subsampling that no configuration varied. Separating them:
+
+| Variant | vs untuned baseline | Paired sd | Same sign |
+|---|---:|---:|---|
+| Bagging only (`subsample`/`colsample` 0.8) | +0.0015 | 0.0020 | No |
+| Lower capacity + L2 only | **+0.0037** | 0.0020 | **Yes (4/4)** |
+| Both (what the search actually fitted) | +0.0056 | 0.0038 | Yes (4/4) |
+
+Two-thirds of the gain is capacity reduction and explicit L2; bagging alone does not clear its own noise. The effects are additive (interaction +0.0003). That is the expected shape when the early training windows hold ~40,000 loans and, per Phase 1, **66 of 87 numeric features are entirely null inside the 2014 embargoed window** — the default 31-leaf tree simply has more capacity than the data supports. Reproduce with `python -m models.gbm_ablation`.
+
+**9. Every imbalance treatment made things worse, and SMOTE's null result was an illusion.** Four treatments against doing nothing, same folds, same model:
+
+| Treatment | Δ PR-AUC | Paired sd | Same sign | Mean predicted p | Brier |
+|---|---:|---:|---|---:|---:|
+| Class weights (`balanced`) | −0.0033 | 0.0041 | No | 0.376 (3.9× true) | 0.1787 |
+| Random undersampling | **−0.0057** | 0.0024 | **Yes (4/4)** | 0.463 (4.8× true) | 0.2409 |
+| SMOTE-NC | −0.0015 | 0.0048 | No | 0.091 | 0.0862 |
+| SMOTE-NC + integer rounding | **−0.0258** | 0.0085 | **Yes (4/4)** | 0.150 | 0.0978 |
+| *(no treatment)* | — | — | — | 0.080 (true rate 0.097) | 0.0859 |
+
+Nothing improved ranking, which is expected: PR-AUC, ROC-AUC and KS depend only on score *order*, and rebalancing applies a roughly monotone shift. What rebalancing does destroy is calibration — undersampling predicts a default probability **4.8× the truth** and nearly triples Brier — and Phases 4 and 5 need probabilities that mean what they say. Undersampling also discards ~84% of the training rows.
+
+The interesting case is SMOTE. Its apparent harmlessness is an artefact: **a classifier can separate SMOTE's synthetic defaults from real ones at ROC-AUC 1.0000.** Interpolating between two real borrowers puts fractional values into **51 of the 80 integer-valued features** (`revol_bal` 99.7% of synthetic rows, FICO band endpoints 92%) — a borrower with 7.43 open accounts does not exist. The booster learns `is_synthetic`, which predicts the positive label perfectly in training and does not exist at scoring time, so it partitions the synthetic half away and trains on the real half. That is why a model fitted on a 50/50 book still predicts a test mean of 0.091 while undersampling on an equally balanced book predicts 0.463.
+
+Removing the tell confirms it. Rounding the integer features so synthetic rows are no longer trivially detectable forces the model to actually learn from them — and performance collapses by **−0.0258 on all four folds**, seventeen times the unrounded effect. SMOTE was not neutral; it was being ignored, and it only looked neutral because of a flaw that also made it detectable. Mechanism and both tests in [`reports/smote_diagnostic.md`](reports/smote_diagnostic.md).
+
 ## Target definition
 
 `default_window = 1` if the loan charged off having stopped paying within **18 months of origination**; `0` if it survived that window. A loan is eligible only once observed for 18 + 6 months, the extra six covering the ~120–150 day delinquency-to-charge-off lag.
@@ -93,7 +132,9 @@ All 151 raw columns classified individually with a stated reason each — an all
 
 Stated plainly, because they bound what the current numbers mean:
 
-- **The model is deliberately quick.** One gradient-boosting configuration, no hyperparameter search, no calibration, 400k-row subsample. It exists to size effects, not to be a good model. Proper baselines are Phase 3.
+- **Discrimination is modest in absolute terms.** The best honest configuration reaches PR-AUC ~0.17 against a 0.097 base rate, ROC-AUC ~0.66. That is what this feature set supports once leakage and the embargo are respected; published numbers far above it on this dataset are almost always one of the two failures Phase 1 and Phase 2 measure.
+- **No calibration yet.** Every model here is scored on ranking and raw Brier; reliability curves and a proper calibration comparison are Phase 4, and the imbalance results above show why that ordering matters.
+- **Four folds is few.** Every paired comparison rests on n=4, which is enough to establish a consistent-sign effect of ~0.006 but not to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **Survivorship bias is partly mitigated, not eliminated.** The fixed window recovers 265,871 previously-discarded loans, but cohorts after early 2017 are still excluded for lack of maturity.
 - **Loans delinquent-but-not-yet-charged-off at snapshot count as survivals.** ~1.5% of the file; some will eventually charge off, so the measured rate is slightly conservative.
 - **Free-text and high-cardinality columns are unused.** `emp_title`, `desc`, `title` and raw `zip_code` are on the allow-list but not yet engineered into features.
@@ -104,7 +145,7 @@ Stated plainly, because they bound what the current numbers mean:
 
 ```
 data/        loading, target definition, per-column leakage audit, data quality
-features/    feature engineering              (Phase 3)
+features/    Weight-of-Evidence encoding
 models/      training and experiments
 evaluation/  drift; calibration and cost curves to follow (Phases 4-5)
 fairness/    group metrics and mitigation     (Phase 6)
@@ -127,6 +168,11 @@ python -m models.seed_stability     # is the grade/int_rate effect above noise?
 python -m models.temporal_validation# walk-forward folds, three split regimes
 python -m evaluation.drift          # PSI / KS drift table
 python -m models.validation_robustness # paired folds + embargo robustness checks
+python -m models.baselines          # trivial / logistic (WoE, naive) / LightGBM
+python -m models.tuning             # nested hyperparameter search
+python -m models.gbm_ablation       # which knob produced the tuning gain
+python -m models.imbalance          # none / weights / undersample / SMOTE
+python -m models.smote_diagnostic   # why SMOTE has no effect here
 ```
 
 Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6GB and the Parquet output ~400MB; neither is committed. `LC_RAW_CSV` and `LC_PARQUET_DIR` override the default data locations.
@@ -137,8 +183,8 @@ Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6
 |---|---|
 | 1. Data integrity & leakage audit | Complete |
 | 2. Temporal validation design | Complete |
-| 3. Baselines & imbalance handling | Next |
-| 4. Calibration | Not started |
+| 3. Baselines & imbalance handling | Complete |
+| 4. Calibration | Next |
 | 5. Cost-sensitive decisioning | Not started |
 | 6. Fairness & bias audit | Not started |
 | 7. Explainability | Not started |

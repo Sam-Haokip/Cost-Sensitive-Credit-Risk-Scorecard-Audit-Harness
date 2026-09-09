@@ -108,10 +108,67 @@ The 90+ DPD alternative is defensible, but it changes the question the model ans
 
 ---
 
+## 7. Weight-of-Evidence encoding for the interpretable reference model
+
+**Decision.** Encode every feature as Weight of Evidence — the log-odds of non-default within its bin — before fitting the logistic regression, rather than the median-impute-and-one-hot pipeline most people reach for.
+
+**Why.** WoE is a log-odds quantity, so a logistic regression works in units it is already additive in, and a monotone-but-curved relationship becomes linear without hand-crafted splines. More importantly for this dataset, it gives missingness its own bin with its own learned weight. Phase 1 found six `mths_since_*` columns that are missing precisely because the event never happened; median-imputing them rewrites "never delinquent" as "delinquent a middling time ago" and inverts the signal. WoE needs no special-casing to get that right, and the resulting bin/count/rate/weight table is readable by a credit officer, which is the point of keeping an interpretable model at all.
+
+**Alternative considered, and measured.** The naive pipeline was fitted as `logistic_raw` specifically so the choice would be a measurement rather than an appeal to industry convention. Because both models share an identical test set within each fold, the comparison is paired: **+0.0065, +0.0007, −0.0045, +0.0060 — mean +0.0022, paired sd 0.0052, sign flipping.** The predicted damage to the `mths_since_*` columns did not show up as a measurable loss.
+
+**So the justification is honesty about what it bought.** WoE is kept for auditability and for correct handling of informative missingness, not for accuracy — on this data those two pipelines are indistinguishable, and the write-up says so rather than claiming a win it cannot demonstrate. The cost is a fitted transform that leaks if fitted outside the fold, so `WOEEncoder.fit` is called on training data only, inside each fold.
+
+---
+
+## 8. Keeping the logistic regression as the reference model, not the gradient booster
+
+**Decision.** Report logistic-WoE as this project's reference model and treat LightGBM as a challenger that has not yet earned the swap.
+
+**Measured result.** Untuned, LightGBM beats logistic-WoE by **+0.0011 PR-AUC with the sign flipping across folds** (−0.0028, −0.0011, +0.0064, +0.0017) — indistinguishable from zero on n=4.
+
+**The obvious objection, tested.** An untuned booster is a weak challenger, so a nested hyperparameter search was run: eight configurations ranked on an inner temporal split of each fold's own training window, the winner refit and scored once on the outer test. Tuning on the reported folds would have biased the estimate by roughly the size of the effect being measured. Tuning gained **+0.0059 (paired sd 0.0038)** over the untuned booster, lifting the gap over logistic-WoE to **+0.0069 (paired sd 0.0058) — still sign-flipping**, negative on the 2014 fold.
+
+**Stated limitation.** The inner split respects temporal ordering but does not re-apply the 24-month embargo, because embargoing it would leave 1,813 loans for the 2014 fold's selection step. Configurations are therefore ranked under a slightly easier regime than they are scored in; the direction of that bias is unknown.
+
+**Where the tuning gain actually came from.** "Tuning helped" explains nothing, so it was decomposed (`models/gbm_ablation.py`). Every selected configuration used `num_leaves=15` against a default of 31 and `min_child_samples` 100–200 against 20; the grid also carried subsampling that no configuration varied, so it was inherited rather than chosen. Separating them: bagging alone is **+0.0015 (sign flips)**, lower capacity plus L2 alone is **+0.0037 (paired sd 0.0020, all four folds)**, together **+0.0056**, interaction +0.0003. The gain is overfitting correction, not the booster discovering structure the linear model missed — which is the expected shape when the 2014 embargoed window holds 39,786 loans with 66 of 87 numeric features entirely null.
+
+**Consequence.** A 1960s scorecard technique matches a modern gradient booster on this problem. The booster costs interpretability that a credit regulator would ask for, and buys nothing this evidence can distinguish from noise, so it does not become the reference model. It stays in the repo as the measured alternative.
+
+---
+
+## 9. Doing nothing about class imbalance
+
+**Decision.** Fit on the natural 9.6% default rate. No class weights, no resampling, no synthetic minority generation.
+
+**Why the reflex is wrong here.** PR-AUC, ROC-AUC and KS depend only on the *order* of scores, and rebalancing applies a roughly monotone shift to the score distribution, so it cannot move a ranking metric much by construction. What it does move is calibration — and Phase 4 (calibration) and Phase 5 (cost-optimal thresholds) both need probabilities that mean what they say.
+
+**Measured, four treatments against none, same folds, same model:**
+
+| Treatment | Δ PR-AUC | Paired sd | Same sign | Mean predicted p (true 0.097) | Brier |
+|---|---:|---:|---|---:|---:|
+| Class weights (`balanced`) | −0.0033 | 0.0041 | No | 0.376 | 0.1787 |
+| Random undersampling | −0.0057 | 0.0024 | Yes (4/4) | 0.463 | 0.2409 |
+| SMOTE-NC | −0.0015 | 0.0048 | No | 0.091 | 0.0862 |
+| SMOTE-NC + integer rounding | −0.0258 | 0.0085 | Yes (4/4) | 0.150 | 0.0978 |
+| None | — | — | — | 0.080 | 0.0859 |
+
+Nothing improved ranking. Undersampling was the worst of the four on discrimination and predicted a default probability **4.8× the truth** while nearly tripling Brier; it also discarded about 84% of the training rows.
+
+**SMOTE's null result turned out to be an illusion, which is the more interesting finding.** A classifier can separate SMOTE-NC's synthetic defaults from real ones at **ROC-AUC 1.0000**. Interpolating between two real borrowers puts fractional values into 51 of the 80 integer-valued features — `revol_bal` in 99.7% of synthetic rows, FICO band endpoints in 92%. The booster learns `is_synthetic`, which predicts the positive label perfectly in training and does not exist at scoring time, so it partitions the synthetic half away and trains on the real half. That is why SMOTE fitted on a 50/50 book predicts a test mean of 0.091 while undersampling on an equally balanced book predicts 0.463.
+
+**The obvious repair was tested and made it worse.** Rounding the integer features removes the tell and forces the model to actually learn from the synthetic rows — performance then collapses by **−0.0258 on all four folds**, seventeen times the unrounded effect. SMOTE was not neutral; it was being ignored, and it looked neutral only because of a flaw that also made it detectable.
+
+**What this does not claim.** That SMOTE is useless in general — on a genuinely continuous feature space its interpolation assumption is reasonable. The claim is narrow and measured: on a space built largely of counts, categorical codes, and Phase 1's *missing because the event never happened* columns, the straight line between two minority points is not itself a plausible minority point. Full mechanism in `reports/smote_diagnostic.md`.
+
+**One more cost worth recording.** SMOTE computes distances, so it cannot run on missing values at all: between 29 and 66 of the 87 numeric features had to be imputed first, and those with no observed value anywhere in the training window had to be filled with a flat constant. LightGBM routes missing values down their own branch and WoE gives them their own bin; SMOTE alone forces the data to be invented before it can be resampled.
+
+---
+
 ## Open items
 
 - **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that, and cohorts after early 2017 remain excluded for lack of maturity.
 - **Free-text and high-cardinality columns are on the allow-list but unused.** `emp_title`, `desc`, `title`, raw `zip_code`.
 - **Loans delinquent but not yet charged off at snapshot count as survivals** under decision 5. About 1.5% of the file; some will eventually charge off, so the measured default rate is slightly conservative.
-- **No hyperparameter search, calibration or unit tests yet.** Every model so far is one fixed gradient-boosting configuration on a 400k subsample, sized to measure effects rather than to be good. Phase 3 onward.
+- **No calibration or unit tests yet.** Calibration is Phase 4, and the imbalance results in decision 9 are the reason that ordering matters: three of four treatments wreck the probability scale while leaving ranking untouched.
+- **Every paired comparison rests on n=4.** Enough to establish a consistent-sign effect of ~0.006, not enough to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **The 18-month window is a parameter, not a finding.** `WINDOW_MONTHS` was chosen from the time-to-default distribution, but no sensitivity analysis across 12 / 18 / 24 has been run.
