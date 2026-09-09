@@ -96,13 +96,23 @@ def detector_auc(Xr, yr, is_synthetic):
     return roc_auc_score(target[holdout], proba), imp
 
 
-def integrality_tell(X_real, Xr, yr, is_synthetic):
-    """B. Which integer-valued features became fractional under interpolation?"""
-    # Integrality is a property of the column, so it is judged on all real rows.
-    integral = [
-        c for c in NUMERIC_FEATURES
-        if pd.to_numeric(X_real[c], errors="coerce").dropna().mod(1).eq(0).all()
-    ]
+def integrality_tell(train_raw, Xr, is_synthetic):
+    """B. Which integer-valued features became fractional under interpolation?
+
+    Judged on the RAW training frame, before the imputation SMOTE requires.
+    Testing it post-imputation would be wrong twice over: the median of an
+    even-length integer column can be fractional (median of 1 and 2 is 1.5),
+    which would hide a genuinely integer feature, and a column with no observed
+    value at all gets filled with a flat 0.0, which would count it as integer
+    when it holds no information whatever.
+    """
+    integral = []
+    for c in NUMERIC_FEATURES:
+        v = pd.to_numeric(train_raw[c], errors="coerce").dropna()
+        if v.empty:                       # never observed in this window
+            continue
+        if v.mod(1).eq(0).all():
+            integral.append(c)
     syn = Xr[is_synthetic]
     rows = []
     for c in integral:
@@ -139,10 +149,11 @@ if __name__ == "__main__":
     print("   0.50 would mean synthetic defaults are interchangeable with real")
     print("   ones, which is the assumption SMOTE rests on.\n")
 
-    integral, tell = integrality_tell(X_real, Xr, yr, is_syn)
+    integral, tell = integrality_tell(train, Xr, is_syn)
+    n_observed = sum(train[c].notna().any() for c in NUMERIC_FEATURES)
     print("B. integer-valued features made fractional by interpolation")
-    print(f"   {len(integral)} of {len(NUMERIC_FEATURES)} numeric features take only "
-          f"whole-number values in the real data;")
+    print(f"   {len(integral)} of the {n_observed} numeric features observed in this "
+          f"window take only whole-number values;")
     print(f"   {len(tell)} of those contain non-integer values after resampling.\n")
     print(tell.head(12).round(1).to_string(index=False))
 
@@ -165,9 +176,12 @@ if __name__ == "__main__":
                 "base rate, while undersampling on an equally balanced book predicts "
                 "0.463. The synthetic half was effectively partitioned away.\n\n")
         f.write("## B. The tell is integrality\n\n")
-        f.write(f"{len(integral)} of {len(NUMERIC_FEATURES)} numeric features take only "
-                f"whole-number values among real borrowers -- counts of accounts, "
-                f"delinquencies, enquiries. Interpolating between two real borrowers "
+        f.write(f"{len(integral)} of the {n_observed} numeric features actually observed "
+                f"in this training window take only whole-number values among real "
+                f"borrowers -- counts of accounts, delinquencies, enquiries. "
+                f"(The remaining {len(NUMERIC_FEATURES) - n_observed} of "
+                f"{len(NUMERIC_FEATURES)} are null throughout the window and carry no "
+                f"information either way.) Interpolating between two real borrowers "
                 f"produces fractional values in {len(tell)} of them, so a single split "
                 f"at a non-integer threshold isolates the synthetic population.\n\n")
         f.write(tell.head(15).round(1).to_markdown(index=False))

@@ -151,11 +151,17 @@ def treat_smote(train, test, round_integers=False):
         res[c] = pd.to_numeric(res[c], errors="coerce")
 
     if round_integers:
+        # Judged on the RAW column, not the imputed one. Post-imputation this
+        # would count the all-null features (filled with a flat 0.0) as
+        # integer-valued, and could miss a real integer column whose median
+        # happens to be fractional.
         integral = [c for c in NUMERIC_FEATURES
-                    if X[c].dropna().mod(1).eq(0).all()]
+                    if train[c].notna().any()
+                    and pd.to_numeric(train[c], errors="coerce").dropna().mod(1).eq(0).all()]
         res[integral] = res[integral].round()
-        print(f"      [smote_rounded] rounded {len(integral)} integer-valued features",
-              flush=True)
+        print(f"      [smote_rounded] rounded {len(integral)} integer-valued features "
+              f"(of {sum(train[c].notna().any() for c in NUMERIC_FEATURES)} observed "
+              f"in this window)", flush=True)
 
     res["default_window"] = np.asarray(yr).astype(int)
 

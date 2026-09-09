@@ -10,7 +10,7 @@ SMOTE's premise is that a synthetic minority point is as good as a real one. At 
 
 ## B. The tell is integrality
 
-80 of 87 numeric features take only whole-number values among real borrowers -- counts of accounts, delinquencies, enquiries. Interpolating between two real borrowers produces fractional values in 51 of them, so a single split at a non-integer threshold isolates the synthetic population.
+51 of the 58 numeric features actually observed in this training window take only whole-number values among real borrowers -- counts of accounts, delinquencies, enquiries. (The remaining 29 of 87 are null throughout the window and carry no information either way.) Interpolating between two real borrowers produces fractional values in 51 of them, so a single split at a non-integer threshold isolates the synthetic population.
 
 | feature               |   pct_synthetic_non_integer |
 |:----------------------|----------------------------:|
