@@ -2,10 +2,10 @@
 
 Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a model card) rather than a model that stops at reporting an AUC.
 
-> **Status: in progress.** Phases 1–3 of 8 complete (data integrity, leakage audit, temporal validation, baselines and imbalance handling). Calibration, cost-sensitive decisioning and the fairness audit are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
+> **Status: in progress.** Phases 1–4 of 8 complete (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration). Cost-sensitive decisioning and the fairness audit are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
 
 
-## What this project found, in ten lines
+## What this project found
 
 | # | Finding | The number |
 |---|---|---|
@@ -19,6 +19,7 @@ Predicting default on 2.26M Lending Club loans (2007–2018) — built as a deci
 | 8 | The tuning gain is overfitting correction, not capacity | ⅔ from regularisation |
 | 9 | Every imbalance treatment hurt; SMOTE's null result was an illusion | **−0.0262**, 4/4 folds |
 | 10 | Found in my own audit: the encoder was silently discarding 11 features | −0.0005, sign flips |
+| 11 | Calibration is perishable: every calibrator converges to the same ECE floor | 0.000 → **0.019** |
 
 Effects that change sign across folds are reported as **null**, not as small. Every
 comparison below is *paired* where the folds share a test set, because the
@@ -158,6 +159,34 @@ On this data that is not an edge case. In the 2016 fold it destroyed exactly the
 **The fix, and the honest result:** giving the modal value its own bin and quantile-binning the remainder recovers all 11 features — and changes PR-AUC by **−0.0005, with the sign flipping**. Their information values are 0.0002–0.0011, so they carried essentially no signal and adding them back to a linear model is marginally *harmful*. The bug was real and worth fixing on the merits — a scorecard that silently drops public records and tax liens is indefensible to an auditor regardless of what it costs in PR-AUC — but the headline did not depend on it. The three models that do not use WoE reproduced to six decimal places, confirming nothing else moved.
 
 
+**11. Calibration: the booster's probabilities are the worst thing about it, and no calibrator beats temporal drift.** Everything above is a *ranking* metric. Phase 5 cannot use a ranking — choosing a cut-off by expected cost needs a number that means what it says. Two models, three treatments, calibrator fitted on the most recent cohort inside the embargoed window and applied to a test cohort two or more years later:
+
+| Model | Calibrator | Brier | ECE | Slope | Mean predicted | Observed |
+|---|---|---:|---:|---:|---:|---:|
+| LightGBM | none | 0.0874 | **0.0308** | **0.59** | 0.0735 | 0.0974 |
+| LightGBM | Platt | 0.0865 | 0.0190 | 0.79 | 0.0818 | 0.0974 |
+| LightGBM | isotonic | 0.0864 | 0.0191 | 0.72 | 0.0816 | 0.0974 |
+| Logistic-WoE | none | 0.0864 | 0.0203 | 0.75 | 0.0808 | 0.0974 |
+| Logistic-WoE | Platt | 0.0864 | 0.0183 | 0.86 | 0.0821 | 0.0974 |
+| Logistic-WoE | isotonic | 0.0864 | 0.0183 | 0.80 | 0.0823 | 0.0974 |
+
+**The scorecard arrives nearly calibrated; the booster does not.** Uncalibrated LightGBM has an ECE of 0.0308 and a calibration slope of 0.59, and predicts a mean default probability of 0.0735 against 0.0974 observed — it under-promises risk by a quarter. Calibrating it is worth **−0.0118 ECE (paired sd 0.0106, all four folds)**. Doing the same to the scorecard is worth −0.0021 with the sign flipping: nothing. That is a third independent count against the booster — it does not rank better, its gain came from regularisation, and its probabilities need repair the scorecard's do not.
+
+![Reliability](reports/figures/reliability.png)
+
+**Platt strictly dominates isotonic here, and the reason is worth knowing.** They reach identical calibration (ECE 0.0183 vs 0.0183 on the scorecard, 0.0190 vs 0.0191 on the booster). But Platt is a two-parameter monotone squeeze, so it leaves ranking *exactly* untouched — PR-AUC changes by 0.00000. Isotonic is a step function, and it **collapses 100,000 distinct predictions into 98 distinct values**, costing −0.0035 PR-AUC. For Phase 5 that matters more than the PR-AUC: a cost-optimal threshold needs somewhere to sit, and isotonic leaves only 98 places to put it.
+
+**The finding that only a temporally-validated project can produce.** Calibration is normally taught as if the world were stationary. Score each calibrator twice — on the cohort it was fitted on, and on the test cohort:
+
+| Calibrator | ECE on its own cohort | ECE on the test cohort |
+|---|---:|---:|
+| none | 0.0147 | 0.0308 |
+| Platt | 0.0039 | **0.0190** |
+| isotonic | **0.0000** | **0.0191** |
+
+Isotonic achieves *perfect* calibration on the cohort it was fitted to and lands in exactly the same place as Platt two years later. **Every calibrator converges to an ECE floor of about 0.019 regardless of how well it fits its own data** — flexibility buys nothing once the cohort changes. The mechanism is visible in the base rates: the calibration cohort defaults at 7.6–8.7%, the test cohort at 8.7–10.7%, a gap of **+0.9 to +2.9 points** the calibrator cannot know about. Even after calibration the models still predict 0.082 against 0.097 observed. On drifting data, calibration is a perishable good.
+
+
 ## Target definition
 
 `default_window = 1` if the loan charged off having stopped paying within **18 months of origination**; `0` if it survived that window. A loan is eligible only once observed for 18 + 6 months, the extra six covering the ~120–150 day delinquency-to-charge-off lag.
@@ -188,7 +217,6 @@ All 151 raw columns classified individually with a stated reason each — an all
 Stated plainly, because they bound what the current numbers mean:
 
 - **Discrimination is modest in absolute terms.** The best honest configuration reaches PR-AUC ~0.17 against a 0.097 base rate, ROC-AUC ~0.66. That is what this feature set supports once leakage and the embargo are respected; published numbers far above it on this dataset are almost always one of the two failures Phase 1 and Phase 2 measure.
-- **No calibration yet.** Every model here is scored on ranking and raw Brier; reliability curves and a proper calibration comparison are Phase 4, and the imbalance results above show why that ordering matters.
 - **`logistic_raw` silently drops all-null training features.** scikit-learn's `SimpleImputer` skips columns with no observed value, so in the 2014 fold it discards 66 of 87 numeric features rather than erroring. Those columns carry no information in that window and neither WoE nor LightGBM can use them either, so the comparison stays fair — but the pipeline reports it as a warning, not a failure, which is worth knowing before trusting any imputer on vintage-partitioned data.
 - **Four folds is few.** Every paired comparison rests on n=4, which is enough to establish a consistent-sign effect of ~0.006 but not to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **Survivorship bias is partly mitigated, not eliminated.** The fixed window recovers 265,871 previously-discarded loans, but cohorts after early 2017 are still excluded for lack of maturity.
@@ -203,7 +231,7 @@ Stated plainly, because they bound what the current numbers mean:
 data/        loading, target definition, per-column leakage audit, data quality
 features/    Weight-of-Evidence encoding
 models/      training and experiments
-evaluation/  drift; calibration and cost curves to follow (Phases 4-5)
+evaluation/  drift and calibration; cost curves to follow (Phase 5)
 fairness/    group metrics and mitigation     (Phase 6)
 reports/     generated analysis output and figures
 tests/       26 tests, runnable without the dataset
@@ -231,6 +259,7 @@ python -m models.logistic_tuning    # the same search budget for the scorecard
 python -m models.gbm_ablation       # which knob produced the tuning gain
 python -m models.imbalance          # none / weights / undersample / SMOTE
 python -m models.smote_diagnostic   # why SMOTE has no effect here
+python -m evaluation.calibration    # none / Platt / isotonic, and drift
 python reports/make_figures.py      # regenerate the README figures from the CSVs
 
 pytest                              # 26 tests, no data files needed
@@ -245,8 +274,8 @@ Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6
 | 1. Data integrity & leakage audit | Complete |
 | 2. Temporal validation design | Complete |
 | 3. Baselines & imbalance handling | Complete |
-| 4. Calibration | Next |
-| 5. Cost-sensitive decisioning | Not started |
+| 4. Calibration | Complete |
+| 5. Cost-sensitive decisioning | Next |
 | 6. Fairness & bias audit | Not started |
 | 7. Explainability | Not started |
 | 8. Model card & packaging | Not started |

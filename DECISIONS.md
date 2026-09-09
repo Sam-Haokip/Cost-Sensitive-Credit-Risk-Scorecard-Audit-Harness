@@ -174,11 +174,50 @@ Nothing improved ranking. Undersampling was the worst of the four on discriminat
 
 ---
 
+## 10. Platt scaling over isotonic regression, and neither treated as a cure
+
+**Decision.** Calibrate with Platt scaling — a two-parameter logistic fit to the predicted log-odds — rather than isotonic regression, and fit it on a held-out cohort inside the embargoed training window rather than on the model's own training data.
+
+**Why calibrate at all.** Everything through Phase 3 was scored on ranking. Phase 5 cannot use a ranking: a cost-optimal cut-off needs a probability that means what it says. Phase 3's imbalance results are the argument for doing this before the threshold work rather than after — three of four treatments left ranking almost untouched while destroying the probability scale, so a project that measured ranking and stopped would have recorded "undersampling barely hurts".
+
+**Why a held-out cohort.** A calibrator fitted on the data the model was fitted on learns that model's training-set overconfidence, not its real miscalibration. The embargoed window is therefore split temporally — model on everything up to the last cohort year, calibrator on that last year — mirroring the Phase 3 hyperparameter split. The cost is real and stated: the model sees less data than the Phase 3 baselines, so these Brier scores are not comparable to that table.
+
+**Measured, two models × three treatments, four folds:**
+
+| Model | Calibrator | Brier | ECE | Slope | Mean predicted (observed 0.0974) |
+|---|---|---:|---:|---:|---:|
+| LightGBM | none | 0.0874 | 0.0308 | 0.59 | 0.0735 |
+| LightGBM | Platt | 0.0865 | 0.0190 | 0.79 | 0.0818 |
+| LightGBM | isotonic | 0.0864 | 0.0191 | 0.72 | 0.0816 |
+| Logistic-WoE | none | 0.0864 | 0.0203 | 0.75 | 0.0808 |
+| Logistic-WoE | Platt | 0.0864 | 0.0183 | 0.86 | 0.0821 |
+| Logistic-WoE | isotonic | 0.0864 | 0.0183 | 0.80 | 0.0823 |
+
+Calibrating LightGBM is worth **−0.0118 ECE (paired sd 0.0106, all four folds)**. Calibrating the scorecard is worth −0.0021 with the sign flipping — nothing. The scorecard arrives very nearly calibrated because a logistic regression on WoE features is fitting log-odds directly; the booster does not, because a gradient booster optimising log-loss on a 9.6% positive rate has no mechanism forcing its output onto the right scale.
+
+**Why Platt over isotonic, when their calibration is identical.** ECE 0.0183 vs 0.0183 on the scorecard, 0.0190 vs 0.0191 on the booster — indistinguishable. The difference is what they cost. Platt is monotone and smooth, so it leaves ranking **exactly** untouched: PR-AUC changes by 0.00000. Isotonic is a step function, and on the 2016 fold it maps 100,000 distinct predictions onto **98 distinct values**, costing −0.0035 PR-AUC. For Phase 5 the tie count matters more than the PR-AUC: a cost-optimal threshold has only 98 places it can sit.
+
+**The finding that made this phase worth doing.** Calibration is normally taught as though the world were stationary. Scoring each calibrator on the cohort it was fitted to *and* on the test cohort:
+
+| Calibrator | ECE on its own cohort | ECE on the test cohort |
+|---|---:|---:|
+| none | 0.0147 | 0.0308 |
+| Platt | 0.0039 | 0.0190 |
+| isotonic | 0.0000 | 0.0191 |
+
+Isotonic is *perfectly* calibrated on its own cohort and lands in the same place as Platt two years later. **Every calibrator converges to an ECE floor near 0.019 regardless of how well it fits its own data.** Flexibility buys nothing once the cohort changes, which is also the honest reason not to reach for a more elaborate calibrator.
+
+The mechanism is a base rate that moves: the calibration cohort defaults at 7.6–8.7%, the test cohort at 8.7–10.7%, a gap of +0.9 to +2.9 points no calibrator fitted on the earlier cohort can know about. Even after calibration the models predict 0.082 against 0.097 observed. **On drifting data, calibration is a perishable good** — which is a Phase 8 monitoring requirement, not a modelling one, and is recorded as such.
+
+**Consequence for the model choice.** This is the third independent count against the gradient booster: it does not rank better than the scorecard, its tuning gain was regularisation rather than discovered structure, and its probabilities need repair the scorecard's do not.
+
+---
+
 ## Open items
 
 - **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that, and cohorts after early 2017 remain excluded for lack of maturity.
 - **Free-text and high-cardinality columns are on the allow-list but unused.** `emp_title`, `desc`, `title`, raw `zip_code`.
 - **Loans delinquent but not yet charged off at snapshot count as survivals** under decision 5. About 1.5% of the file; some will eventually charge off, so the measured default rate is slightly conservative.
-- **No calibration or unit tests yet.** Calibration is Phase 4, and the imbalance results in decision 9 are the reason that ordering matters: three of four treatments wreck the probability scale while leaving ranking untouched.
+- **Calibration does not survive drift, and nothing here fixes that.** Decision 10 measures an ECE floor of ~0.019 caused by base-rate movement between cohorts. Correcting it needs periodic recalibration on recent outcomes, which is a monitoring requirement for Phase 8 rather than something a better calibrator solves.
 - **Every paired comparison rests on n=4.** Enough to establish a consistent-sign effect of ~0.006, not enough to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **The 18-month window is a parameter, not a finding.** `WINDOW_MONTHS` was chosen from the time-to-default distribution, but no sensitivity analysis across 12 / 18 / 24 has been run.

@@ -196,9 +196,41 @@ def fig_calibration():
     plt.close(fig)
 
 
+def fig_reliability():
+    """Phase 4: do the predicted probabilities mean what they say?"""
+    c = pd.read_csv("reports/reliability_curves.csv")
+    c = c[c.model == "lightgbm"]
+    styles = {"none": (RED, "Uncalibrated"),
+              "platt": (BLUE, "Platt (2 parameters)"),
+              "isotonic": (AQUA, "Isotonic (step function)")}
+
+    fig, ax = plt.subplots(figsize=(6.4, 5.0))
+    lim = 0.30
+    ax.plot([0, lim], [0, lim], color=INK_2, linewidth=1.2, linestyle="--",
+            zorder=2, label="perfect calibration")
+    for cal, (col, lab) in styles.items():
+        g = (c[c.calibrator == cal].groupby("bin")[["predicted", "observed"]]
+             .mean().sort_values("predicted"))
+        ax.plot(g["predicted"], g["observed"], "-o", color=col, linewidth=2,
+                markersize=7, markeredgecolor=SURFACE, markeredgewidth=1.2,
+                label=lab, zorder=4)
+    ax.set_xlim(0, lim); ax.set_ylim(0, lim)
+    ax.set_ylabel("Observed default rate", fontsize=9)
+    ax.grid(color=GRID, linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, fontsize=9, loc="upper left")
+    _style(ax, "Predicted probability of default",
+           "Every version underpredicts risk on a later cohort",
+           "Above the line = more defaults arrived than the model promised")
+    fig.tight_layout()
+    fig.savefig(f"{OUT}/reliability.png", dpi=200)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
-    for fn in (fig_leakage, fig_regimes, fig_models, fig_calibration):
+    for fn in (fig_leakage, fig_regimes, fig_models, fig_calibration,
+               fig_reliability):
         fn()
         print(f"wrote {fn.__name__}")
     print(f"\nfigures in {OUT}/")
