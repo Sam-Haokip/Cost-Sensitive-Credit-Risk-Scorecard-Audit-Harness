@@ -70,10 +70,19 @@ That Phase 1 finding predicted exactly which features would break temporal valid
 |---|---:|---:|---:|---:|---:|
 | Trivial (majority class) | 0.0974 | 0.0086 | 0.5000 | 0.0000 | 0.0882 |
 | Logistic, median-impute + one-hot | 0.1634 | 0.0298 | 0.6577 | 0.2306 | 0.0864 |
-| Logistic, Weight-of-Evidence | 0.1656 | 0.0256 | 0.6588 | 0.2301 | 0.0857 |
+| Logistic, Weight-of-Evidence | 0.1650 | 0.0259 | 0.6583 | 0.2294 | 0.0857 |
 | LightGBM, untuned | 0.1666 | 0.0287 | 0.6598 | 0.2324 | 0.0859 |
 
-LightGBM over logistic-WoE is **+0.0011 with the sign flipping across folds** — indistinguishable from zero. A nested hyperparameter search (tuning on an inner temporal split, so the reported folds never influence selection) gains **+0.0059 (paired sd 0.0038)** over the untuned booster, which lifts the gap over logistic-WoE to **+0.0069 (paired sd 0.0058) — still with the sign flipping**, on the 2014 fold. Four folds cannot establish an effect that small.
+Untuned, LightGBM over logistic-WoE is **+0.0016 with the sign flipping across folds** — indistinguishable from zero.
+
+**Both models were then given the same eight-configuration nested search**, ranked on an inner temporal split of each fold's own training window so the reported folds never influence selection. Tuning one side and not the other would have made the comparison worthless:
+
+| | Gain from tuning | Paired sd | Same sign |
+|---|---:|---:|---|
+| LightGBM | **+0.0059** | 0.0038 | Yes (4/4) |
+| Logistic-WoE | +0.0006 | 0.0008 | No |
+
+The booster needs tuning; the scorecard was already at its ceiling. **Tuned against tuned, the gap is +0.0068 (paired sd 0.0059), and it still flips sign** — negative on the 2014 fold. Four folds cannot establish an effect that small.
 
 The honest summary: **on this problem, a 1960s-vintage scorecard technique matches a modern gradient booster**, and the booster costs interpretability a credit regulator would ask for. The trivial model makes the companion point — it scores **90.3% accuracy** while catching zero defaults, which is why accuracy appears nowhere else in this README.
 
@@ -94,14 +103,32 @@ Two-thirds of the gain is capacity reduction and explicit L2; bagging alone does
 | Class weights (`balanced`) | −0.0033 | 0.0041 | No | 0.376 (3.9× true) | 0.1787 |
 | Random undersampling | **−0.0057** | 0.0024 | **Yes (4/4)** | 0.463 (4.8× true) | 0.2409 |
 | SMOTE-NC | −0.0015 | 0.0048 | No | 0.091 | 0.0862 |
-| SMOTE-NC + integer rounding | **−0.0258** | 0.0085 | **Yes (4/4)** | 0.150 | 0.0978 |
+| SMOTE-NC + integer rounding | **−0.0262** | 0.0082 | **Yes (4/4)** | 0.150 | 0.0979 |
 | *(no treatment)* | — | — | — | 0.080 (true rate 0.097) | 0.0859 |
 
 Nothing improved ranking, which is expected: PR-AUC, ROC-AUC and KS depend only on score *order*, and rebalancing applies a roughly monotone shift. What rebalancing does destroy is calibration — undersampling predicts a default probability **4.8× the truth** and nearly triples Brier — and Phases 4 and 5 need probabilities that mean what they say. Undersampling also discards ~84% of the training rows.
 
-The interesting case is SMOTE. Its apparent harmlessness is an artefact: **a classifier can separate SMOTE's synthetic defaults from real ones at ROC-AUC 1.0000.** Interpolating between two real borrowers puts fractional values into **51 of the 80 integer-valued features** (`revol_bal` 99.7% of synthetic rows, FICO band endpoints 92%) — a borrower with 7.43 open accounts does not exist. The booster learns `is_synthetic`, which predicts the positive label perfectly in training and does not exist at scoring time, so it partitions the synthetic half away and trains on the real half. That is why a model fitted on a 50/50 book still predicts a test mean of 0.091 while undersampling on an equally balanced book predicts 0.463.
+The interesting case is SMOTE. Its apparent harmlessness is an artefact: **a classifier can separate SMOTE's synthetic defaults from real ones at ROC-AUC 1.0000.** **51 of the 58 numeric features observed in that training window take only whole-number values in real data, and interpolation makes every one of them fractional** (`revol_bal` in 99.7% of synthetic rows, FICO band endpoints in 92%) — a borrower with 7.43 open accounts does not exist. The booster learns `is_synthetic`, which predicts the positive label perfectly in training and does not exist at scoring time, so it partitions the synthetic half away and trains on the real half. That is why a model fitted on a 50/50 book still predicts a test mean of 0.091 while undersampling on an equally balanced book predicts 0.463.
 
-Removing the tell confirms it. Rounding the integer features so synthetic rows are no longer trivially detectable forces the model to actually learn from them — and performance collapses by **−0.0258 on all four folds**, seventeen times the unrounded effect. SMOTE was not neutral; it was being ignored, and it only looked neutral because of a flaw that also made it detectable. Mechanism and both tests in [`reports/smote_diagnostic.md`](reports/smote_diagnostic.md).
+Removing the tell confirms it. Rounding the integer features so synthetic rows are no longer trivially detectable forces the model to actually learn from them — and performance collapses by **−0.0262 on all four folds**, seventeen times the unrounded effect. SMOTE was not neutral; it was being ignored, and it only looked neutral because of a flaw that also made it detectable. Mechanism and both tests in [`reports/smote_diagnostic.md`](reports/smote_diagnostic.md).
+
+**10. Found in audit: the WoE encoder was silently discarding 11 of the scorecard's 58 usable features.** Quantile binning fails without error on a column where one value holds more than 1/`n_bins` of the mass: every quantile lands on that value, the bin edges deduplicate to fewer than three, and the encoder falls through to a branch that maps every non-null value into a single bucket. The feature becomes a constant.
+
+On this data that is not an edge case. In the 2016 fold it destroyed exactly the fields a credit model most wants:
+
+| Feature | Share at the modal value | Fate before the fix |
+|---|---:|---|
+| `acc_now_delinq` | 99.8% | one bin |
+| `tax_liens` | 99.3% | one bin |
+| `pub_rec_bankruptcies` | 92.2% | one bin |
+| `pub_rec` | 91.5% | one bin |
+| `num_tl_90g_dpd_24m` | 67.1% | one bin |
+| `tot_coll_amt` | 64.2% | one bin |
+
+`evaluation/drift.py` had already hit the identical failure computing PSI and carried a fix; `features/woe.py` never got it. Two modules in the same repo, one of which had learned the lesson.
+
+**The fix, and the honest result:** giving the modal value its own bin and quantile-binning the remainder recovers all 11 features — and changes PR-AUC by **−0.0005, with the sign flipping**. Their information values are 0.0002–0.0011, so they carried essentially no signal and adding them back to a linear model is marginally *harmful*. The bug was real and worth fixing on the merits — a scorecard that silently drops public records and tax liens is indefensible to an auditor regardless of what it costs in PR-AUC — but the headline did not depend on it. The three models that do not use WoE reproduced to six decimal places, confirming nothing else moved.
+
 
 ## Target definition
 
@@ -134,6 +161,7 @@ Stated plainly, because they bound what the current numbers mean:
 
 - **Discrimination is modest in absolute terms.** The best honest configuration reaches PR-AUC ~0.17 against a 0.097 base rate, ROC-AUC ~0.66. That is what this feature set supports once leakage and the embargo are respected; published numbers far above it on this dataset are almost always one of the two failures Phase 1 and Phase 2 measure.
 - **No calibration yet.** Every model here is scored on ranking and raw Brier; reliability curves and a proper calibration comparison are Phase 4, and the imbalance results above show why that ordering matters.
+- **`logistic_raw` silently drops all-null training features.** scikit-learn's `SimpleImputer` skips columns with no observed value, so in the 2014 fold it discards 66 of 87 numeric features rather than erroring. Those columns carry no information in that window and neither WoE nor LightGBM can use them either, so the comparison stays fair — but the pipeline reports it as a warning, not a failure, which is worth knowing before trusting any imputer on vintage-partitioned data.
 - **Four folds is few.** Every paired comparison rests on n=4, which is enough to establish a consistent-sign effect of ~0.006 but not to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **Survivorship bias is partly mitigated, not eliminated.** The fixed window recovers 265,871 previously-discarded loans, but cohorts after early 2017 are still excluded for lack of maturity.
 - **Loans delinquent-but-not-yet-charged-off at snapshot count as survivals.** ~1.5% of the file; some will eventually charge off, so the measured rate is slightly conservative.
@@ -169,7 +197,8 @@ python -m models.temporal_validation# walk-forward folds, three split regimes
 python -m evaluation.drift          # PSI / KS drift table
 python -m models.validation_robustness # paired folds + embargo robustness checks
 python -m models.baselines          # trivial / logistic (WoE, naive) / LightGBM
-python -m models.tuning             # nested hyperparameter search
+python -m models.tuning             # nested hyperparameter search (LightGBM)
+python -m models.logistic_tuning    # the same search budget for the scorecard
 python -m models.gbm_ablation       # which knob produced the tuning gain
 python -m models.imbalance          # none / weights / undersample / SMOTE
 python -m models.smote_diagnostic   # why SMOTE has no effect here
