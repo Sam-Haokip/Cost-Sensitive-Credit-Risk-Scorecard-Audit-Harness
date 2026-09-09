@@ -17,7 +17,7 @@ The same model, same data, same split — trained twice. Once on every column th
 
 A near-perfect credit risk model is not an achievement, it's a symptom. The naive version scores 0.997 because 38 of its columns — `recoveries`, `total_pymnt`, `last_fico_range_high`, the hardship-programme fields, the debt-settlement fields — only get populated *after* the loan is funded, and several only exist for loans that already went bad. The model isn't predicting the outcome; it's reading it.
 
-**0.19 is what this problem actually looks like.** (PR-AUC against a 9.63% base rate; ROC-AUC 0.70.)
+**0.19 is what this problem actually looks like** — and even that is generous. (PR-AUC against a 9.63% base rate; ROC-AUC 0.70.) That figure comes from a random split, which is the methodology the rest of this README argues against. Under the honest regime Phase 2 establishes — walk-forward folds trained only on cohorts whose outcomes had matured — the best configuration reaches **0.167**. The number above isolates the leakage effect by holding everything else constant; [finding 7](#key-findings) carries the one you should judge the models by.
 
 ## Key findings
 
