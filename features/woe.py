@@ -64,14 +64,38 @@ class WOEEncoder:
 
     # ---- binning ---------------------------------------------------------
     def _numeric_bins(self, s: pd.Series):
-        vals = s.dropna()
+        """Quantile bins, with a mass-point fallback for zero-inflated columns.
+
+        Plain quantile binning fails silently on a column where one value holds
+        more than 1/n_bins of the mass: every quantile lands on that value, the
+        edges deduplicate to fewer than three, and the column is discarded.
+        On this data that is not an edge case -- it destroyed 11 of the 58
+        usable numeric features in the 2016 fold, and they were the delinquency
+        and derogatory-record fields a credit model most wants: `pub_rec`
+        (91.5% zero), `pub_rec_bankruptcies` (92.2%), `tax_liens` (99.3%),
+        `acc_now_delinq` (99.8%), `tot_coll_amt` (64.2%), `num_tl_90g_dpd_24m`.
+
+        `evaluation/drift.py` hit the identical failure computing PSI and fixed
+        it there; this is the same fix carried into the encoder. The mass point
+        gets its own bin -- "has no public records" is exactly the kind of sharp
+        risk boundary a scorecard should be able to express -- and the remaining
+        values are quantile-binned among themselves.
+        """
+        vals = pd.to_numeric(s, errors="coerce").dropna()
         if vals.empty:
             return None
         edges = np.unique(np.nanquantile(vals, np.linspace(0, 1, self.n_bins + 1)))
-        if len(edges) < 3:
-            return None  # effectively constant -> treated as categorical below
-        edges[0], edges[-1] = -np.inf, np.inf
-        return edges
+        if len(edges) >= 3:
+            edges[0], edges[-1] = -np.inf, np.inf
+            return edges
+
+        mode = float(vals.mode().iloc[0])
+        rest = vals[vals != mode]
+        if rest.empty:
+            return None                      # genuinely constant
+        inner = np.nanquantile(rest, np.linspace(0, 1, self.n_bins + 1))
+        edges = np.unique(np.concatenate([[-np.inf], [mode], inner, [np.inf]]))
+        return edges if len(edges) >= 3 else None
 
     def _assign(self, s: pd.Series, col: str) -> pd.Series:
         """Map raw values to bin labels, with missing as its own explicit bin."""
