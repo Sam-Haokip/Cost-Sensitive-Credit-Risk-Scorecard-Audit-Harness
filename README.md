@@ -2,7 +2,7 @@
 
 Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a model card) rather than a model that stops at reporting an AUC.
 
-> **Status: in progress.** Phases 1–4 of 8 complete (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration). Cost-sensitive decisioning and the fairness audit are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
+> **Status: in progress.** Phases 1–5 of 8 complete (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration, cost-sensitive decisioning). The fairness audit, explainability, and packaging are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
 
 
 ## What this project found
@@ -20,6 +20,7 @@ Predicting default on 2.26M Lending Club loans (2007–2018) — built as a deci
 | 9 | Every imbalance treatment hurt; SMOTE's null result was an illusion | **−0.0262**, 4/4 folds |
 | 10 | Found in my own audit: the encoder was silently discarding 11 features | −0.0005, sign flips |
 | 11 | Calibration is perishable: every calibrator converges to the same ECE floor | 0.000 → **0.019** |
+| 12 | A cost-derived threshold (~0.20) barely beats naive 0.5 — risk scores rarely get that high | **+$5**/applicant, sign flips |
 
 Effects that change sign across folds are reported as **null**, not as small. Every
 comparison below is *paired* where the folds share a test set, because the
@@ -186,6 +187,30 @@ On this data that is not an edge case. In the 2016 fold it destroyed exactly the
 
 Isotonic achieves *perfect* calibration on the cohort it was fitted to and lands in exactly the same place as Platt two years later. **Every calibrator converges to an ECE floor of about 0.019 regardless of how well it fits its own data** — flexibility buys nothing once the cohort changes. The mechanism is visible in the base rates: the calibration cohort defaults at 7.6–8.7%, the test cohort at 8.7–10.7%, a gap of **+0.9 to +2.9 points** the calibrator cannot know about. Even after calibration the models still predict 0.082 against 0.097 observed. On drifting data, calibration is a perishable good.
 
+**12. A cost-optimal threshold barely beats naive 0.5 here — and the reason is more interesting than the result.** A probability is only useful if it changes a decision. Every applicant is priced with two rates measured from loans whose lifetime outcome is fully known (not the 18-month proxy `default_window` — a deliberate, stated gap; see [`DECISIONS.md`](DECISIONS.md) decision 11): loss-given-default and realised margin, both dollar-weighted and scaled by that applicant's own loan amount.
+
+| Rate | Value | Reading |
+|---|---:|---|
+| Loss given default | **0.653** | a defaulted $10,000 loan loses ~$6,534 net of recoveries |
+| Margin, realised | **0.165** | a performing $10,000 loan earns ~$1,646 in collected interest |
+| Margin, full-term formula | 0.483 | 3× the realised figure — most loans pay off before term |
+
+The threshold that maximises expected profit is found by an *exact* search over every distinct calibrated score (no grid, verified against brute force in `tests/test_decisioning.py`), on the Platt-calibrated logistic-WoE scorecard:
+
+| Fold | Threshold | Approve rate | Profit/applicant | vs. naive 0.5 | Threshold-drift cost |
+|---|---:|---:|---:|---:|---:|
+| 2014 | 0.228 | 99.2% | $1,379 | −$7 | $8 (0.6% of oracle) |
+| 2015 | 0.200 | 98.1% | $1,227 | +$7 | $3 (0.2%) |
+| 2016 | 0.237 | 99.4% | $1,066 | +$7 | $27 (2.5%) |
+| 2017 | 0.197 | 98.1% | $1,217 | +$14 | $12 (1.0%) |
+
+![Decisioning curve](reports/figures/decisioning_curve.png)
+
+**Mean gain over a flat 0.5 cutoff: +$5.42/applicant (sd $8.96), sign flips in 1 of 4 folds — null by this project's own standard.** The reason is visible in the figure: calibrated scores never exceed 0.45 in any fold, so at this base rate almost no applicant scores anywhere near 0.5. "Reject above 0.5" and "approve nearly everyone" are almost the same policy, so the two thresholds only disagree on the 1–4% of applicants scored between them — small money averaged across the whole population. This is not the textbook result, and it is reported as measured rather than adjusted to fit the expectation. A closed-form cross-check confirms the search is finding the right number anyway: ignoring score shape, the break-even point is `margin/(margin+lgd)` = 0.165/0.818 = **0.202**, and the four measured thresholds (0.197–0.237) sit right around it.
+
+**Extending past the brief: does the threshold itself drift the way calibration does?** Decision 10 found calibration converges to the same error floor two-plus years out. Pricing the threshold picked on the most recent available cohort against the threshold that would have been optimal on the test cohort itself (an oracle, not something deployable in advance) gives **a mean drift cost of $12.47/applicant (sd $10.48), 1.1% of oracle profit** — real, but an order of magnitude smaller *in relative terms* than calibration's own drift. The mechanism is the same flat-topped curve visible above: the optimum sits where profit barely changes with the threshold, so a several-point shift in exactly where the cutoff sits costs little even though the underlying probabilities moved.
+
+**Sensitivity: a ±30% swing in either cost assumption moves the threshold by 0.05–0.07** (probability units) in the expected direction — a higher loss-given-default tightens the cutoff, a higher margin loosens it. The number 0.20 is a function of the stated assumptions, not a constant; a real deployment would need to revisit both rates periodically, which is a monitoring requirement rather than something a better search procedure fixes.
 
 ## Target definition
 
@@ -223,7 +248,7 @@ Stated plainly, because they bound what the current numbers mean:
 - **Loans delinquent-but-not-yet-charged-off at snapshot count as survivals.** ~1.5% of the file; some will eventually charge off, so the measured rate is slightly conservative.
 - **Free-text and high-cardinality columns are unused.** `emp_title`, `desc`, `title` and raw `zip_code` are on the allow-list but not yet engineered into features.
 - **Proxy fairness only.** The dataset contains no direct protected attributes; the planned audit uses geography and income as imperfect proxies, which bounds the conclusions it can support.
-- **No unit tests yet.**
+- **Unit economics are portfolio averages, not per-applicant pricing.** Loss-given-default and margin rates (decision 11) are scaled by an applicant's own loan amount but not by term, grade, or vintage beyond that, and margin specifically moves across cohorts (0.14–0.23) without correction.
 
 ## Repo layout
 
@@ -231,10 +256,10 @@ Stated plainly, because they bound what the current numbers mean:
 data/        loading, target definition, per-column leakage audit, data quality
 features/    Weight-of-Evidence encoding
 models/      training and experiments
-evaluation/  drift and calibration; cost curves to follow (Phase 5)
+evaluation/  drift, calibration, and cost-sensitive decisioning
 fairness/    group metrics and mitigation     (Phase 6)
 reports/     generated analysis output and figures
-tests/       26 tests, runnable without the dataset
+tests/       31 tests, runnable without the dataset
 ```
 
 ## Reproducing
@@ -260,9 +285,10 @@ python -m models.gbm_ablation       # which knob produced the tuning gain
 python -m models.imbalance          # none / weights / undersample / SMOTE
 python -m models.smote_diagnostic   # why SMOTE has no effect here
 python -m evaluation.calibration    # none / Platt / isotonic, and drift
+python -m evaluation.decisioning    # unit economics, cost-optimal threshold, drift, sensitivity
 python reports/make_figures.py      # regenerate the README figures from the CSVs
 
-pytest                              # 26 tests, no data files needed
+pytest                              # 31 tests, no data files needed
 ```
 
 Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6GB and the Parquet output ~400MB; neither is committed. `LC_RAW_CSV` and `LC_PARQUET_DIR` override the default data locations.
@@ -275,8 +301,8 @@ Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6
 | 2. Temporal validation design | Complete |
 | 3. Baselines & imbalance handling | Complete |
 | 4. Calibration | Complete |
-| 5. Cost-sensitive decisioning | Next |
-| 6. Fairness & bias audit | Not started |
+| 5. Cost-sensitive decisioning | Complete |
+| 6. Fairness & bias audit | Next |
 | 7. Explainability | Not started |
 | 8. Model card & packaging | Not started |
 

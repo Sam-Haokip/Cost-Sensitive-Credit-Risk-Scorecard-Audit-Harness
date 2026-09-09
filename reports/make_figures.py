@@ -227,10 +227,42 @@ def fig_reliability():
     plt.close(fig)
 
 
+def fig_decisioning():
+    """Phase 5: the shape of the cost curve, and why textbook 0.5 barely loses
+    here. Full curve for one representative cohort (2017, the most recent
+    fold), primary model (logistic-WoE, Platt-calibrated) -- every number on
+    it read from the committed CSVs, same as every other figure."""
+    c = pd.read_csv("reports/decisioning_curves.csv")
+    t = pd.read_csv("reports/decisioning_thresholds.csv")
+    fold, model = 2017, "logistic_woe"
+    curve = c[(c.model == model) & (c.fold == fold)].sort_values("approve_rate")
+    row = t[(t.model == model) & (t.fold == fold)].iloc[0]
+
+    fig, ax = plt.subplots(figsize=(7.6, 4.2))
+    ax.plot(curve["approve_rate"] * 100, curve["profit_per_applicant"],
+            color=BLUE, linewidth=2.2, zorder=3)
+    ax.plot(row["approve_rate_realistic"] * 100, row["profit_realistic_on_test"], "o",
+            color=RED, markersize=10, markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=5,
+            label=f"cost-optimal  ·  approve {row['approve_rate_realistic']:.1%}  ·  thr {row['thr_realistic']:.2f}")
+    ax.plot(row["approve_rate_naive"] * 100, row["profit_naive_on_test"], "o",
+            color=ORANGE, markersize=10, markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=5,
+            label=f"naive thr=0.5  ·  approve {row['approve_rate_naive']:.1%}")
+    ax.set_xlim(0, 103)
+    ax.set_ylim(0, curve["profit_per_applicant"].max() * 1.15)
+    ax.set_ylabel("Mean profit per applicant ($)", fontsize=9)
+    ax.legend(frameon=False, fontsize=8.5, loc="upper left")
+    _style(ax, "Approval rate  (rejecting the riskiest applicants first)",
+           "The cost curve is nearly flat where the two thresholds differ",
+           "2017 test cohort · logistic-WoE, Platt-calibrated · every applicant priced by realised unit economics")
+    fig.tight_layout()
+    fig.savefig(f"{OUT}/decisioning_curve.png", dpi=200)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     for fn in (fig_leakage, fig_regimes, fig_models, fig_calibration,
-               fig_reliability):
+               fig_reliability, fig_decisioning):
         fn()
         print(f"wrote {fn.__name__}")
     print(f"\nfigures in {OUT}/")

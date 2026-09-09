@@ -213,11 +213,53 @@ The mechanism is a base rate that moves: the calibration cohort defaults at 7.6�
 
 ---
 
+## 11. A dollar-weighted cost matrix built from realised outcomes, and a threshold search extended to ask whether the threshold itself drifts
+
+**Decision.** Price every applicant with two portfolio-level rates estimated from loans whose lifetime outcome is fully known — a loss-given-default rate and a realised-margin rate, each dollar-weighted and each scaled by that applicant's own `loan_amnt` — then find the threshold that maximises mean profit per applicant by an exact search over every distinct calibrated score, not a grid. Primary model is the Platt-calibrated logistic-WoE scorecard (decisions 8 and 10); LightGBM is scored the same way for comparison.
+
+**Why the unit economics are decoupled from the modelling target, and why that gap is real.** `default_window` asks "did this loan default within 18 months" (decision 5) — an early-warning proxy, not a claim about eventual outcome. The cost matrix needs a different thing: what does an average default actually cost, what does an average performing loan actually earn. Those are population-level business constants, so they are estimated from loans with a **fully resolved** lifetime outcome (Charged Off/Default vs. Fully Paid, the original decision-2 definition, regardless of the 18-month window), then applied to decisions the model makes on the windowed proxy. This is standard practice — a real deployment doesn't know a specific applicant's future cash flows either, it applies population averages to a predicted risk — but it means the cost matrix is not claiming loan-level precision, and that limitation is stated rather than hidden.
+
+**Measured unit economics, 1.35M loans with a known lifetime outcome:**
+
+| Rate | Value | Reading |
+|---|---:|---|
+| Loss given default (dollar-weighted) | **0.653** | a defaulted $10,000 loan loses ~$6,534 net of recoveries |
+| Margin, realised interest collected (dollar-weighted) | **0.165** | a performing $10,000 loan earns ~$1,646 |
+| Margin, full-term formula (`int_rate` × term) | 0.483 | what the sticker rate implies if held to maturity |
+
+Realised margin is **66% below** the full-term formula — most performing loans pay off before term, so the formula-based number a naive cost model would reach for overstates the real yield by 3×. LGD is stable across cohorts (0.56–0.67); margin is not (0.14 in 2007, peaking at 0.23 in 2012–13, back to 0.14 by 2016) — a second, independent drift signal alongside decision 10's base-rate drift, in a rate this project had not previously measured.
+
+**The threshold search is exact, not gridded.** Profit is piecewise-constant between consecutive sorted scores, so sorting once and taking a cumulative sum gives the exact profit at every possible cut-point in O(n log n) — the same computation also produces the profit-vs-approval-rate curve for the figure. Verified against a 4,001-point brute-force grid search on synthetic data (`tests/test_decisioning.py`) before trusting it on the real folds.
+
+**Measured, four folds, same fit/calibrate/test split as decision 10:**
+
+| Fold | Threshold | Approve rate | Profit/applicant | vs. naive 0.5 | Drift cost |
+|---|---:|---:|---:|---:|---:|
+| 2014 | 0.228 | 99.2% | $1,379 | −$7 | $8 (0.6% of oracle) |
+| 2015 | 0.200 | 98.1% | $1,227 | +$7 | $3 (0.2%) |
+| 2016 | 0.237 | 99.4% | $1,066 | +$7 | $27 (2.5%) |
+| 2017 | 0.197 | 98.1% | $1,217 | +$14 | $12 (1.0%) |
+
+(logistic-WoE; LightGBM lands within a few dollars of every number above — model choice does not change the decision, consistent with every prior phase.)
+
+**The threshold barely beats naive 0.5, and the reason is worth more than the result.** Mean gain over a flat 0.5 cutoff is **+$5.42/applicant (sd $8.96), sign flips in 1 of 4 folds** — by this project's own standard, a null result. The reason: calibrated scores **never exceed 0.45** across any fold (logistic-WoE) — at a 9.7% base rate, almost no applicant's predicted risk gets anywhere near 0.5, so "reject above 0.5" and "approve almost everyone" are nearly the same policy. The real threshold (~0.20) only disagrees with 0.5 on the ~1–4% of applicants scored above it, and averaged across the whole population that disagreement is small money. This is not the textbook result ("naive thresholds destroy value") and is reported as measured rather than adjusted to match the expectation.
+
+**Cross-check: the measured threshold matches the closed-form break-even.** Ignoring calibration-curve shape, the point where approving an average loan stops being profitable in expectation is `margin/(margin+lgd)` = 0.165/(0.165+0.653) = **0.202**. The four measured thresholds (0.197–0.237, mean 0.215) sit right around it — an independent arithmetic check that the search is finding the right answer, not an artefact of the search procedure.
+
+**The extension past the brief: does the threshold itself drift the way calibration does?** Decision 10 found calibration converges to the same error floor 2+ years out regardless of fit quality. The analogous question for a threshold: pick it on the most recent cohort available at decision time (the same "calib" cohort decision 10 uses), apply it unchanged to the cohort 2+ years later, and compare to the threshold that would have been optimal on that later cohort had it been knowable in advance (an oracle, not a deployable policy). **Mean drift cost: $12.47/applicant, sd $10.48, 1.1% of oracle profit** — real, and worth monitoring, but an order of magnitude smaller *in relative terms* than calibration's own drift (ECE roughly doubled in decision 10). The mechanism is the same corner-solution effect: the optimum sits where the profit curve is nearly flat (see `reports/figures/decisioning_curve.png`), so a several-point shift in where exactly the cutoff sits costs little even though the underlying probabilities moved.
+
+**Sensitivity: ±30% on either cost assumption moves the threshold by 0.05–0.07** (probability units) — meaningful relative to a threshold of ~0.20, and the direction is exactly what the arithmetic predicts (LGD up → stricter/lower threshold; margin up → more lenient/higher threshold). The specific number 0.20 is therefore a function of the assumptions stated above, not a constant; a real deployment would need to revisit both rates periodically; not treated as a modelling problem, same status as decision 10's drift finding.
+
+**Caveats, stated rather than absorbed into the headline:** unit economics are portfolio averages scaled by `loan_amnt`, not applicant-specific pricing beyond that; every applicant of a given size and risk level is priced identically regardless of, say, term or grade-specific recovery differences; and this rests on the same n=4 folds as everything since decision 10, enough for a consistent-sign effect but not for precision below a few dollars per applicant.
+
+---
+
 ## Open items
 
 - **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that, and cohorts after early 2017 remain excluded for lack of maturity.
 - **Free-text and high-cardinality columns are on the allow-list but unused.** `emp_title`, `desc`, `title`, raw `zip_code`.
 - **Loans delinquent but not yet charged off at snapshot count as survivals** under decision 5. About 1.5% of the file; some will eventually charge off, so the measured default rate is slightly conservative.
-- **Calibration does not survive drift, and nothing here fixes that.** Decision 10 measures an ECE floor of ~0.019 caused by base-rate movement between cohorts. Correcting it needs periodic recalibration on recent outcomes, which is a monitoring requirement for Phase 8 rather than something a better calibrator solves.
+- **Calibration does not survive drift, and the decision it feeds is only partly insulated from that.** Decision 10 measures an ECE floor of ~0.019; decision 11 measures that the downstream threshold decision loses ~1% of profit to the same drift, not more, because the cost-optimal region is flat. Both need periodic recalibration against recent outcomes, a Phase 8 monitoring requirement rather than something either phase's modelling choices solve.
+- **Unit economics are portfolio averages, not per-applicant pricing.** Loss-given-default and margin rates are scaled by `loan_amnt` but not by term, grade, or vintage beyond that — decision 11 documents that both rates move across cohorts (margin more than LGD) without correcting for it.
 - **Every paired comparison rests on n=4.** Enough to establish a consistent-sign effect of ~0.006, not enough to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **The 18-month window is a parameter, not a finding.** `WINDOW_MONTHS` was chosen from the time-to-default distribution, but no sensitivity analysis across 12 / 18 / 24 has been run.
