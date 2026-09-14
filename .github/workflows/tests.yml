@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # requirements.txt pins shap==0.51.0, which needs Python >=3.11 for a
+      # prebuilt wheel (see MODEL_CARD.md / DECISIONS.md for the machine
+      # this project's own dev environment hit that constraint on, running
+      # Python 3.10 -- CI is pinned to 3.11 specifically to avoid it).
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # All 82 tests are synthetic-data unit/regression tests -- none of
+      # them need the Lending Club CSV or a Census API key, so CI runs the
+      # full suite without downloading either. See README's "Reproducing"
+      # section for what a real data run additionally requires.
+      - name: Run tests
+        run: pytest -q

@@ -259,10 +259,51 @@ def fig_decisioning():
     plt.close(fig)
 
 
+def fig_fairness():
+    """Phase 6, added in Phase 8's packaging pass -- the one phase that
+    previously had no committed figure (its output is entirely tabular:
+    fairness_gaps.csv, fairness_group_rates.csv, fairness_summary.md). Both
+    gaps, at Phase 5's shared cost-optimal threshold, for all three proxies
+    and both models -- the same 6 rows finding 13's README table reports."""
+    d = pd.read_csv("reports/fairness_gaps.csv")
+    baseline = d[d.scenario == "baseline"]
+    g = baseline.groupby(["proxy", "model"])[["dp_gap", "eo_tpr_gap"]].mean()
+
+    order = [("emp_length", "logistic_woe"), ("emp_length", "lightgbm"),
+             ("income_quintile", "logistic_woe"), ("income_quintile", "lightgbm"),
+             ("geo_race_proxy", "logistic_woe"), ("geo_race_proxy", "lightgbm")]
+    names = {"emp_length": "emp_length", "income_quintile": "income_quintile",
+             "geo_race_proxy": "geo_race_proxy"}
+    labels = [f"{names[p]}\n{m}" for p, m in order]
+    dp = [g.loc[(p, m), "dp_gap"] for p, m in order]
+    eo = [g.loc[(p, m), "eo_tpr_gap"] for p, m in order]
+
+    fig, ax = plt.subplots(figsize=(7.6, 4.6))
+    y = np.arange(len(order))[::-1]
+    h = 0.32
+    ax.barh(y + h / 2, dp, height=h, color=BLUE, zorder=3, label="Demographic parity gap")
+    ax.barh(y - h / 2, eo, height=h, color=ORANGE, zorder=3, label="Equal-opportunity (TPR) gap")
+    for yi, v in zip(y + h / 2, dp):
+        ax.text(v + 0.001, yi, f"{v:.3f}", va="center", fontsize=8.5, color=INK_2)
+    for yi, v in zip(y - h / 2, eo):
+        ax.text(v + 0.001, yi, f"{v:.3f}", va="center", fontsize=8.5, color=INK_2)
+    ax.set_yticks(y); ax.set_yticklabels(labels, fontsize=9)
+    ax.set_ylim(-0.6, len(order) - 0.25)
+    ax.set_xlim(0, max(dp + eo) * 1.35)
+    ax.legend(frameon=False, fontsize=8.5, loc="lower right")
+    _style(ax, "Gap at Phase 5's shared cost-optimal threshold",
+           "Every proxy shows both gaps nonzero at once",
+           "The single-threshold impossibility result, made numeric — see README finding 13")
+    ax.tick_params(axis="y", length=0)
+    fig.tight_layout()
+    fig.savefig(f"{OUT}/fairness_gaps.png", dpi=200)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     for fn in (fig_leakage, fig_regimes, fig_models, fig_calibration,
-               fig_reliability, fig_decisioning):
+               fig_reliability, fig_decisioning, fig_fairness):
         fn()
         print(f"wrote {fn.__name__}")
     print(f"\nfigures in {OUT}/")

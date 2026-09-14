@@ -1,8 +1,10 @@
 # Cost-Sensitive Credit Risk Scorecard & Audit Harness
 
-Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a model card) rather than a model that stops at reporting an AUC.
+[![tests](https://github.com/Sam-Haokip/Cost-Sensitive-Credit-Risk-Scorecard-Audit-Harness/actions/workflows/tests.yml/badge.svg)](https://github.com/Sam-Haokip/Cost-Sensitive-Credit-Risk-Scorecard-Audit-Harness/actions/workflows/tests.yml)
 
-> **Status: in progress.** Phases 1–7 of 8 complete (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration, cost-sensitive decisioning, fairness audit, explainability). Packaging is not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
+Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a [model card](MODEL_CARD.md)) rather than a model that stops at reporting an AUC.
+
+> **Status: complete.** All 8 phases done (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration, cost-sensitive decisioning, fairness audit, explainability, model card & packaging). Every number below is reproducible from the committed code — `python run_all.py` regenerates all of it. See [Project status](#project-status) and the [model card](MODEL_CARD.md).
 
 
 ## What this project found
@@ -225,6 +227,8 @@ The threshold that maximises expected profit is found by an *exact* search over 
 | geo_race_proxy | logistic_woe | 0.011 (sd 0.005) | 0.99 | 0.010 (sd 0.005) |
 | geo_race_proxy | lightgbm | 0.010 (sd 0.004) | 0.99 | 0.011 (sd 0.008) |
 
+![Fairness gaps](reports/figures/fairness_gaps.png)
+
 `fairness/metrics.py` cites the classical result (Chouldechova 2017; Kleinberg, Mullainathan & Raghavan 2016): a single shared threshold cannot generally zero out both demographic parity and equalized odds when base rates differ across groups. The base rates here do differ — `income_quintile`'s top bracket defaults at 7.5% against 12.0% for its bottom bracket — and the table is the demonstration: at Phase 5's shared threshold, every proxy shows *both* gaps simultaneously nonzero. Worth stating plainly: that threshold approves 96–99.7% of applicants in every fold, and when approval is that close to universal, a group's approval rate and its true-positive rate numerically converge, which mutes this tension. A stricter, more typical lending approval rate would very likely show it more sharply — this project has not yet built and committed the code to measure that precisely (see [`DECISIONS.md`](DECISIONS.md) open items), so it is stated as a caveat rather than a number.
 
 **Per-group thresholds (fit on the calibration cohort) can close either gap — and closing one isn't free.** Two mitigations were tried per proxy, `demographic_parity` and `equal_opportunity`, each targeting the population-wide rate the shared threshold already achieves:
@@ -317,9 +321,16 @@ fairness/    group metrics, Census geography proxy, and mitigation
 explainability/ SHAP (exact linear closed-form + TreeSHAP), permutation importance, local explanations
 reports/     generated analysis output and figures
 tests/       82 tests, runnable without the dataset (the Census fetch itself is not — see Reproducing)
+notebooks/   walkthrough.ipynb -- narrates the findings, imports from the modules above,
+             does not retrain anything (see Reproducing for the one command that does)
+MODEL_CARD.md  Mitchell et al.-format model card: intended use, performance across
+               groups, ethical considerations, deployment caveats
+run_all.py     the single command that regenerates every table and figure below
 ```
 
 ## Reproducing
+
+A single command regenerates everything below: `python run_all.py` (add `--yes` to skip its confirmation prompt, `--dry-run` to see the step list and time estimate without running anything, `--only <step>` or `--from-step <step>` to run one step or resume after a failure). It runs the exact same commands listed here, in the same order, and prints a time estimate before starting — see `run_all.py`'s own docstring for what that estimate is measured vs. guessed. The commands are also listed individually below for running one phase at a time or reading what each step actually does:
 
 ```bash
 # Python 3.10+
@@ -366,7 +377,7 @@ Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6
 | 5. Cost-sensitive decisioning | Complete |
 | 6. Fairness & bias audit | Complete |
 | 7. Explainability | Complete |
-| 8. Model card & packaging | Next |
+| 8. Model card & packaging | Complete |
 
 ## Data
 
