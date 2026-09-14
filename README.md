@@ -2,7 +2,7 @@
 
 Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a model card) rather than a model that stops at reporting an AUC.
 
-> **Status: in progress.** Phases 1–6 of 8 complete (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration, cost-sensitive decisioning, fairness audit). Explainability and packaging are not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
+> **Status: in progress.** Phases 1–7 of 8 complete (data integrity, leakage audit, temporal validation, baselines, imbalance handling, calibration, cost-sensitive decisioning, fairness audit, explainability). Packaging is not yet built. Every number below is reproducible from the committed code. See [Project status](#project-status).
 
 
 ## What this project found
@@ -22,6 +22,7 @@ Predicting default on 2.26M Lending Club loans (2007–2018) — built as a deci
 | 11 | Calibration is perishable: every calibrator converges to the same ECE floor | 0.000 → **0.019** |
 | 12 | A cost-derived threshold (~0.20) barely beats naive 0.5 — risk scores rarely get that high | **+$5**/applicant, sign flips |
 | 13 | A single shared threshold can't zero out demographic parity and equal opportunity at once, on any proxy | dp_gap 0.010–0.055 |
+| 14 | The model leans heavily on borrower state by SHAP, but shuffling it barely hurts predictive accuracy | SHAP rank 4–7/96, permutation ≈0 |
 
 Effects that change sign across folds are reported as **null**, not as small. Every
 comparison below is *paired* where the folds share a test set, because the
@@ -239,6 +240,31 @@ Most of these costs aren't distinguishable from zero given n=4 folds and a cost 
 
 **A real bug, caught only after real Census data arrived.** The first real-data run showed `geo_race_proxy`'s mitigated demographic-parity gap at 0.117 — *worse* than its 0.026 baseline. Cause: 5 of 894 ZIP3s Census flags `insufficient_data` (population under 500, or no ZCTA match at all) carry only 33–49 loans per 100k-loan fold; treated as an ordinary group, that tiny N produced a noisy ~100% baseline approval rate that a per-group mitigation threshold amplified rather than corrected. Fixed by excluding those loans from the comparison entirely (162 test-cohort loans across all folds, ~0.04% of the dataset) — a Census data-quality flag is not a demographic group, and the "measure, don't assume" standard this project holds elsewhere caught it only because real data, not synthetic fixtures, was run through the full pipeline before trusting the result. Full reasoning in [`DECISIONS.md`](DECISIONS.md) decision 12.
 
+**14. Explainability: SHAP and permutation importance mostly agree on what matters — except for `addr_state`, which the model leans on heavily by one definition of "important" and barely at all by the other.** Both models are explained in a shared unit, log-odds of default: LightGBM's raw score is already log-odds, and WoE encoding makes the logistic scorecard's linear predictor log-odds too, by construction. Two different methods answer two different questions in that unit — SHAP (exact for the linear model, `shap.TreeExplainer` for LightGBM) asks how much a feature moved each prediction the model actually made; permutation importance asks how much shuffling a feature hurts held-out PR-AUC, matching this project's primary metric everywhere else. Both are computed on all 4 outer folds:
+
+| Feature (logistic_woe) | mean \|SHAP\| | mean perm. importance | mean rank gap |
+|---|---:|---:|---:|
+| annual_inc | 0.198 | 0.0061 | 2.2 |
+| loan_amnt | 0.152 | 0.0064 | 2.0 |
+| term | 0.138 | 0.0082 | 3.0 |
+| fico_range_high | 0.122 | 0.0024 | 5.2 |
+| **addr_state** | **0.106** | **−0.0006** | **46.8** |
+
+| Feature (lightgbm) | mean \|SHAP\| | mean perm. importance | mean rank gap |
+|---|---:|---:|---:|
+| fico_range_high | 0.323 | 0.0105 | 2.0 |
+| annual_inc | 0.284 | 0.0122 | 1.2 |
+| loan_amnt | 0.195 | 0.0157 | 2.8 |
+| **addr_state** | **0.192** | **0.0015** | **31.2** |
+
+`addr_state` sits in the top 10 by SHAP in both models — comparable in magnitude to `annual_inc` — but its permutation importance is indistinguishable from zero (and slightly negative for logistic_woe: shuffling it, if anything, didn't hurt). This held across all 4 folds and both models, and two easy explanations were checked and ruled out rather than assumed: it isn't an artifact of small training data (fold 2016, with a 93,153-row fit cohort, showed one of the *worst* disagreements, not the best), and it isn't explained by correlation with a single other top-20 feature (nearest neighbour r = 0.02–0.09 in the `addr_state` cases, well under this project's own 0.3 flagging threshold). The most defensible reading: the model's fitted coefficients or splits treat state as if it carries real signal, but that signal doesn't survive contact with held-out ranking performance once 95 other features are already in the model — which matters here because Phase 6 found this same feature (as a ZIP3-level proxy) is where the measured geographic fairness gap comes from. Whether the model is leaning on largely non-generalizing state-level noise for a feature that's also fairness-sensitive is exactly the kind of question this project would want to answer next, not assume — recorded as an open item in `DECISIONS.md` rather than asserted here.
+
+Of 8 fold/model cases with the single largest SHAP-vs-permutation rank gap, a correlated top-20 neighbour (|r| ≥ 0.3) was found in 4 — `revol_util`/`fico_range_low` (r=0.38), `total_il_high_credit_limit`/`annual_inc` (r=0.34), `inq_last_6mths`/`mths_since_recent_inq` (r=0.40), `mo_sin_rcnt_tl`/`num_tl_op_past_12m` (r=0.57) — the classic mechanism the module's own docstring predicts: a correlated partner already in the model can "cover" for a shuffled feature's information, so permutation barely moves the metric even though SHAP still credits both individually. The other 4, including every `addr_state` case, were **not** explained by this simple check and are reported that way rather than forced into the same story. A second real data-only finding surfaced along the way: `total_il_high_credit_limit` shows exactly zero SHAP and permutation importance in the 2014 and 2015 folds specifically — confirmed (not assumed) to be because the field is 100% null in both fit cohorts (18,065/18,065 and 39,786/39,786 missing), a Lending Club field-introduction artifact of the same kind Phase 1's drift analysis already documented for other columns, not a bug in this phase's code.
+
+**Independent confirmation of a Phase 3 finding, from an unrelated method.** The 6 features Phase 3's WoE-encoder bin-collapse fix rescued (decision 7) had information value of 0.0002–0.0011 at fit time — essentially nothing. SHAP, which has nothing to do with WoE binning, agrees: all 6 rank in the bottom half of logistic_woe's 96 features (27th–63rd), and `acc_now_delinq` and `tax_liens` are within 1e-8 of exactly zero SHAP importance because they are within 1e-8 of exactly zero *variance* in the earliest fold (`acc_now_delinq` is literally 0.0 for all 18,065 fit-cohort loans in 2014) — checked directly against the raw data rather than assumed from the rounded printout.
+
+Three representative applicants (most recent fold, decision-time information only — never the hindsight outcome label) are explained feature-by-feature in [`reports/explainability_local_examples.md`](reports/explainability_local_examples.md); the full per-fold, per-feature importance table is in [`reports/explainability_importance.csv`](reports/explainability_importance.csv).
+
 ## Target definition
 
 `default_window = 1` if the loan charged off having stopped paying within **18 months of origination**; `0` if it survived that window. A loan is eligible only once observed for 18 + 6 months, the extra six covering the ~120–150 day delinquency-to-charge-off lag.
@@ -276,6 +302,8 @@ Stated plainly, because they bound what the current numbers mean:
 - **Free-text and high-cardinality columns are unused.** `emp_title`, `desc`, `title` and raw `zip_code` are on the allow-list but not yet engineered into features.
 - **Proxy fairness only.** The dataset contains no direct protected attributes; the audit uses income, employment length, and a Census-derived geography proxy as imperfect stand-ins, which bounds the conclusions it can support. `geo_race_proxy` specifically labels a ZIP3's plurality demographic, not any individual borrower's race — see finding 13.
 - **The fairness tension was measured at one operating point.** Phase 5's near-universal-approval threshold (96–99.7%) mutes the demographic-parity/equal-opportunity trade-off numerically; a stricter approval rate would likely show it more sharply, and this project hasn't yet built the code to measure that precisely.
+- **A large SHAP-vs-permutation rank gap doesn't always mean a large gap in true importance.** For several flagged features (including `addr_state`) the permutation-importance *value* sits close to zero in every fold, both positive and negative — a quantity that small is inherently noisy to rank precisely against 95 others, so the exact rank gap swings a lot fold to fold even though the underlying story ("SHAP high, permutation ≈0") doesn't change. Read the rank-gap number as "flagged for a closer look," not as a precise measurement of disagreement size.
+- **Why `addr_state` gets high SHAP credit but low permutation importance is diagnosed, not proven.** Two candidate explanations (small-sample overfitting, correlation with another top feature) were checked and ruled out; no alternative has been confirmed. This bears on Phase 6's fairness finding for this same feature and is an open item, not a closed one.
 - **Unit economics are portfolio averages, not per-applicant pricing.** Loss-given-default and margin rates (decision 11) are scaled by an applicant's own loan amount but not by term, grade, or vintage beyond that, and margin specifically moves across cohorts (0.14–0.23) without correction.
 
 ## Repo layout
@@ -286,8 +314,9 @@ features/    Weight-of-Evidence encoding
 models/      training and experiments
 evaluation/  drift, calibration, and cost-sensitive decisioning
 fairness/    group metrics, Census geography proxy, and mitigation
+explainability/ SHAP (exact linear closed-form + TreeSHAP), permutation importance, local explanations
 reports/     generated analysis output and figures
-tests/       64 tests, runnable without the dataset (the Census fetch itself is not — see Reproducing)
+tests/       82 tests, runnable without the dataset (the Census fetch itself is not — see Reproducing)
 ```
 
 ## Reproducing
@@ -318,9 +347,10 @@ LC_CENSUS_API_KEY=<your key> python -m fairness.geo_proxy  # OPTIONAL: refetch t
                                      # (not needed to reproduce -- data/processed/census_zip3_race_proxy.csv
                                      # is committed; api.census.gov also isn't reachable from every network)
 python -m fairness.audit            # group fairness metrics, impossibility result, mitigation cost
+python -m explainability.explain    # SHAP + permutation importance (~28 min on the full 4 folds -- see module docstring)
 python reports/make_figures.py      # regenerate the README figures from the CSVs
 
-pytest                              # 64 tests, no data files needed
+pytest                              # 82 tests, no data files needed
 ```
 
 Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6GB and the Parquet output ~400MB; neither is committed. `LC_RAW_CSV` and `LC_PARQUET_DIR` override the default data locations. `data/processed/census_zip3_race_proxy.csv` (894 ZIP3 rows, public Census ACS data, ~170KB) *is* committed, specifically so `fairness.audit`'s geography numbers reproduce without a Census API key.
@@ -335,8 +365,8 @@ Runs are seeded (`random_state=42`) and dependencies pinned. The raw CSV is ~1.6
 | 4. Calibration | Complete |
 | 5. Cost-sensitive decisioning | Complete |
 | 6. Fairness & bias audit | Complete |
-| 7. Explainability | Next |
-| 8. Model card & packaging | Not started |
+| 7. Explainability | Complete |
+| 8. Model card & packaging | Next |
 
 ## Data
 
