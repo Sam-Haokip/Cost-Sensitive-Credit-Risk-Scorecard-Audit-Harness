@@ -184,11 +184,22 @@ def best_threshold(y, p, loan_amnt, lgd_rate, margin_rate):
     return float(thr[i]), float(profit[i])
 
 
-def profit_at(y, p, loan_amnt, lgd_rate, margin_rate, threshold):
-    approve = p <= threshold
+def profit_from_approve(y, approve, loan_amnt, lgd_rate, margin_rate):
+    """Same accounting as profit_at, taking a precomputed approve mask
+    directly instead of deriving one from a single scalar threshold. Added for
+    Phase 6: a fairness mitigation approves each applicant against THEIR
+    GROUP's own threshold, so there is no one scalar to hand profit_at -- but
+    the dollar accounting per approved/rejected loan is identical either way,
+    and it stays here so both call sites can never drift apart."""
     y, loan_amnt = np.asarray(y, dtype=float), np.asarray(loan_amnt, dtype=float)
+    approve = np.asarray(approve, dtype=bool)
     per_loan = np.where(~approve, 0.0, np.where(y == 1, -lgd_rate * loan_amnt, margin_rate * loan_amnt))
     return float(per_loan.mean()), float(approve.mean())
+
+
+def profit_at(y, p, loan_amnt, lgd_rate, margin_rate, threshold):
+    p = np.asarray(p, dtype=float)
+    return profit_from_approve(y, p <= threshold, loan_amnt, lgd_rate, margin_rate)
 
 
 if __name__ == "__main__":

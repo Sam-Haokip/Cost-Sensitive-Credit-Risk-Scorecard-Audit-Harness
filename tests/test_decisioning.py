@@ -5,9 +5,26 @@ threshold on every fold."""
 import numpy as np
 import pytest
 
-from evaluation.decisioning import best_threshold, profit_at, profit_curve
+from evaluation.decisioning import best_threshold, profit_at, profit_curve, profit_from_approve
 
 SEED = 0
+
+
+def test_profit_at_delegates_to_profit_from_approve_correctly():
+    """Phase 6 split profit_at's accounting out into profit_from_approve so
+    a per-group (rather than one shared scalar) threshold could reuse it --
+    this locks in that the refactor didn't change profit_at's own answer."""
+    rng = np.random.default_rng(SEED + 7)
+    n = 1000
+    y = rng.integers(0, 2, n)
+    p = rng.uniform(0, 1, n)
+    amt = rng.uniform(1000, 30000, n)
+    threshold = 0.35
+
+    profit_a, rate_a = profit_at(y, p, amt, 0.65, 0.16, threshold)
+    profit_b, rate_b = profit_from_approve(y, p <= threshold, amt, 0.65, 0.16)
+    assert profit_a == pytest.approx(profit_b)
+    assert rate_a == pytest.approx(rate_b)
 
 
 def _brute_force_best(y, p, amt, lgd_rate, margin_rate, grid):
