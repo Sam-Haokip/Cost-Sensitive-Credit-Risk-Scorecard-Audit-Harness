@@ -254,6 +254,46 @@ Realised margin is **66% below** the full-term formula — most performing loans
 
 ---
 
+## 12. Three imperfect proxies for a protected attribute the data doesn't contain, a single-threshold impossibility result made numeric, and a mitigation that isn't free
+
+**Decision.** Lending Club's public data has no borrower race, sex, or age — so the fairness audit uses three proxies, each stated as imperfect rather than treated as ground truth: `income_quintile` (5 population-quantile bins of `annual_inc`, edges fit on the calibration cohort and widened to ±inf, applied to test — the same fit/apply discipline as every other quantile-binned feature in this project), `emp_length` (raw self-reported categories, with an explicit `"missing"` bucket rather than an imputed one), and `geo_race_proxy` (each loan's ZIP3 mapped to the plurality race/ethnicity of that ZIP3's population, from Census ACS 2018 5-year estimates, table B03002). All three are evaluated on Phase 5's Platt-calibrated logistic-WoE scorecard *and* LightGBM, at Phase 5's own cost-optimal shared threshold (decision 11) — the audit asks whether the threshold this project already chose on profit grounds also treats groups differently, not a threshold picked for this purpose.
+
+**Why `geo_race_proxy` is weaker than it looks, and why that's stated rather than hidden.** Real BISG (Bayesian Improved Surname Geocoding, the method regulators actually use) combines surname and geography; LC's data has no borrower name, so this is geography alone — weaker, and it inherits the ecological fallacy directly: a Black borrower in a majority-White ZIP3 is silently assigned `white_nonhispanic`, and the reverse. Every number under this proxy is a statement about a ZIP3's measured demographic composition, not about any individual borrower. `fairness/geo_proxy.py` fetches this from `api.census.gov` — blocked by this org's network egress from both the cloud sandbox and the linked Mac's own sandboxed shell, so the fetch has to run from the user's real, unproxied terminal. The resulting 894-row zip3 table is committed (`data/processed/census_zip3_race_proxy.csv`, with a `.gitignore` exception) specifically so the real numbers below reproduce without anyone needing their own Census API key.
+
+**Baseline gaps at Phase 5's shared threshold, mean (sd) across 4 folds:**
+
+| Proxy | Model | Demographic parity gap | Disparate impact ratio | Equal-opportunity (TPR) gap |
+|---|---|---:|---:|---:|
+| income_quintile | logistic_woe | 0.024 (0.015) | 0.98 | 0.022 (0.013) |
+| income_quintile | lightgbm | 0.018 (0.015) | 0.98 | 0.017 (0.014) |
+| emp_length | logistic_woe | **0.055 (0.030)** | 0.94 | 0.052 (0.029) |
+| emp_length | lightgbm | 0.019 (0.010) | 0.98 | 0.019 (0.010) |
+| geo_race_proxy | logistic_woe | 0.011 (0.005) | 0.99 | 0.010 (0.005) |
+| geo_race_proxy | lightgbm | 0.010 (0.004) | 0.99 | 0.011 (0.008) |
+
+**The impossibility result, made numeric rather than asserted.** `fairness/metrics.py` cites the Chouldechova (2017) / Kleinberg-Mullainathan-Raghavan (2016) result: a single shared threshold cannot generally zero out both demographic parity and equalized odds at once when base rates differ across groups. The base rates here do differ — `income_quintile`'s highest bracket defaults at 7.5%, its lowest at 12.0%, a 4.5-point spread; `emp_length`'s spread is 4.2 points; `geo_race_proxy`'s is smaller, 1.5 points (white_nonhispanic 9.6% vs hispanic 10.8%) — and the table above is the demonstration: at Phase 5's single shared threshold, every proxy shows *both* gaps simultaneously nonzero, never one at the expense of the other being zero. `emp_length`'s spread of base rates is the largest of the three (tied with income), and it produces this audit's largest disparity on both criteria at once.
+
+**A caveat worth stating plainly: Phase 5's threshold happens to sit somewhere that mutes this tension.** The cost-optimal threshold approves 96–99.7% of applicants in every fold (decision 11) — a near-universal-approval regime, because calibrated risk scores rarely exceed 0.45 at this base rate. When almost everyone is approved, a group's overall approval rate and its true-positive rate converge numerically (most of the approved population is, by construction, the "good" population), which compresses both fairness gaps toward each other and toward zero regardless of the underlying disparity. A stricter, more typical underwriting approval rate (60–80%, common in real lending) would very likely show a sharper version of the same tension — this project did not build and commit the code to measure that precisely, so it is recorded here as an open item (see below) rather than asserted with a number this project cannot reproduce on demand.
+
+**Mitigation: per-group thresholds, fit on the calibration cohort, applied to test — and it is not free.** For each proxy, two mitigations were tried: `demographic_parity` (each group's threshold set to hit the same target approval rate) and `equal_opportunity` (each group's threshold set to hit the same target TPR), both targeting the population-wide value Phase 5's shared threshold already achieves, so the comparison isolates the effect of per-group thresholds rather than also changing the overall approval volume.
+
+| Proxy | Model | Mitigation | Cost ($/applicant) | Resulting DP gap | Resulting EO gap |
+|---|---|---|---:|---:|---:|
+| income_quintile | logistic_woe | demographic_parity | −$1.08 (sd 2.36) | 0.006 | 0.006 |
+| income_quintile | lightgbm | demographic_parity | +$1.88 (sd 1.77) | 0.008 | 0.008 |
+| emp_length | logistic_woe | demographic_parity | −$1.03 (sd 1.09) | 0.006 | 0.007 |
+| emp_length | lightgbm | demographic_parity | −$0.35 (sd 1.04) | 0.010 | 0.009 |
+| geo_race_proxy | logistic_woe | demographic_parity | −$0.53 (sd 0.41) | 0.012 | 0.011 |
+| geo_race_proxy | lightgbm | demographic_parity | **+$0.28 (sd 0.65)** | 0.022 | 0.021 |
+
+(`equal_opportunity` mitigation lands within a point or two of the same resulting gaps for every proxy/model — see `reports/fairness_gaps.csv` for the full 12-row table including both mitigations.) As with decision 11's mitigation-adjacent costs, most of these are not distinguishable from zero given n=4 folds and a cost sd 1–4x the mean — a negative mean cost means "not measurably different from free," not "fairness paid for itself." The one cost that clears its own noise in the *expected* direction is `geo_race_proxy`/lightgbm at +$0.28/applicant: a small, real, honestly-reported price for closing a 0.010 gap to near-zero.
+
+**The bug this project caught only after real data arrived.** The first real-data run of `geo_race_proxy` showed a resulting DP gap of 0.117 after mitigation — *worse* than the 0.026 baseline it started from, the opposite of what a mitigation is for. Root cause: Census flags 5 of the 894 zip3s as `insufficient_data` (population under 500, or no matching ZCTA at all), and those zip3s carry only 33–49 loans per 100k-loan test fold. Treated as an ordinary comparison group, that tiny N produced a noisy ~100% baseline approval rate, and fitting a per-group mitigation threshold on an even smaller calibration-cohort slice of it amplified the noise rather than correcting real disparity. Fixed by excluding `insufficient_data`-labeled loans from the `geo_race_proxy` comparison entirely (162 test-cohort loans across all 4 folds, ~0.04% of the dataset) — a data-quality flag is not a demographic group, and this project's own "measure, don't assume" standard caught it only because the real Census data, not synthetic test fixtures, was run through the full pipeline before trusting the numbers.
+
+**Caveats, stated rather than absorbed into the headline:** all three proxies are imperfect stand-ins for attributes this dataset does not contain, and the audit cannot and does not claim to measure disparity by actual race, sex, or age; `geo_race_proxy` additionally inherits the ecological fallacy described above; every gap and cost rests on the same n=4 folds as decisions 10–11, enough for a consistent-sign effect but not for precision below a few thousandths on the gap metrics or a couple of dollars on cost; and the muted-tension caveat above means the disparities measured here are a lower bound on what a stricter, more typical lending threshold would show, not an upper one.
+
+---
+
 ## Open items
 
 - **Survivorship bias is partly mitigated** by the fixed-window target (decision 5), which recovers 265,871 previously-discarded loans. No reweighting or inverse-probability correction has been attempted on top of that, and cohorts after early 2017 remain excluded for lack of maturity.
@@ -263,3 +303,5 @@ Realised margin is **66% below** the full-term formula — most performing loans
 - **Unit economics are portfolio averages, not per-applicant pricing.** Loss-given-default and margin rates are scaled by `loan_amnt` but not by term, grade, or vintage beyond that — decision 11 documents that both rates move across cohorts (margin more than LGD) without correcting for it.
 - **Every paired comparison rests on n=4.** Enough to establish a consistent-sign effect of ~0.006, not enough to resolve differences below ~0.002. Effects that flip sign are reported as null rather than as small.
 - **The 18-month window is a parameter, not a finding.** `WINDOW_MONTHS` was chosen from the time-to-default distribution, but no sensitivity analysis across 12 / 18 / 24 has been run.
+- **The DP-vs-equalized-odds tension was measured only at Phase 5's own near-universal-approval threshold.** Decision 12 notes that this compresses both fairness gaps toward each other; no committed code yet re-runs the audit at a stricter, more typical lending approval rate (60–80%) to show how much sharper the tension gets. Worth building as a small, dedicated sensitivity script before this project claims to have shown the impossibility result at its strongest.
+- **All three Phase 6 proxies are stand-ins, not measurements, of a protected attribute this dataset does not contain.** `geo_race_proxy` additionally inherits the ecological fallacy (a borrower's individual race is never observed, only their ZIP3's plurality); `income_quintile` and `emp_length` are class proxies, not race or age proxies, and the audit does not claim otherwise.
