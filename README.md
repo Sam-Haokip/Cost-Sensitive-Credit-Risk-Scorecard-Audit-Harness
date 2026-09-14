@@ -1,4 +1,4 @@
-# Credit Default Risk: A Decision System, Not Just a Score
+# Cost-Sensitive Credit Risk Scorecard & Audit Harness
 
 Predicting default on 2.26M Lending Club loans (2007–2018) — built as a decision system with a governance layer (cost-optimal thresholds, calibrated probabilities, a fairness audit, temporal validation, a model card) rather than a model that stops at reporting an AUC.
 
