@@ -101,18 +101,42 @@ DEFAULT_CACHE_PATH = "data/processed/census_zip3_race_proxy.csv"
 _MIN_ZIP3_POPULATION = 500
 
 
-def fetch_acs_zcta_race(api_key, year=ACS_YEAR, base_url=None, timeout=60):
+def fetch_acs_zcta_race(api_key, year=ACS_YEAR, base_url=None, timeout=90):
     """One live call to the Census ACS 5-year API for every ZCTA in the
     country. Requires real, unproxied internet access -- see the module
-    docstring for why that means a plain terminal, not a Claude-driven shell."""
+    docstring for why that means a plain terminal, not a Claude-driven shell.
+
+    `in=state:*` is not optional: the dataset's own geography metadata
+    (api.census.gov/data/2018/acs/acs5/geography.json) lists "zip code
+    tabulation area" as `"requires": ["state"]` -- a query for ZCTAs alone,
+    with no state qualifier at all, isn't a documented request shape. It
+    still fetches every ZCTA nationally in one call (state is separately
+    marked `"wildcard": ["state"]`, so `state:*` doesn't restrict anything);
+    it just has to be present. Confirmed the hard way: omitting it doesn't
+    fail with an HTTP error status -- the API answers 200 with a PLAIN-TEXT
+    error message instead of JSON, which surfaces here as an opaque
+    JSONDecodeError unless the response body is surfaced first."""
     import requests
 
     url = base_url or (f"https://api.census.gov/data/{year}/acs/acs5" if base_url is None else base_url)
     fields = ",".join(["NAME"] + list(_B03002_FIELDS))
-    params = {"get": fields, "for": "zip code tabulation area:*", "key": api_key}
+    params = {"get": fields, "for": "zip code tabulation area:*", "in": "state:*", "key": api_key}
     resp = requests.get(url, params=params, timeout=timeout)
-    resp.raise_for_status()
-    return _parse_acs_response(resp.json())
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Census API returned HTTP {resp.status_code} for {resp.url!r}.\n"
+            f"Body (first 2000 chars): {resp.text[:2000]!r}"
+        )
+    try:
+        rows = resp.json()
+    except ValueError as e:
+        raise RuntimeError(
+            "Census API returned HTTP 200 but the body isn't valid JSON -- this "
+            "is how the API reports a malformed request (a plain-text message, "
+            "not a JSON error object), not a sign the API itself is down.\n"
+            f"URL: {resp.url!r}\nBody (first 2000 chars): {resp.text[:2000]!r}"
+        ) from e
+    return _parse_acs_response(rows)
 
 
 def _parse_acs_response(rows):
@@ -138,7 +162,15 @@ def _parse_acs_response(rows):
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
         df.loc[df[col] < 0, col] = float("nan")
-    return df[["zcta"] + numeric_cols]
+    df = df[["zcta"] + numeric_cols]
+    # Querying with in=state:* returns one row per (zcta, state) pair. Census
+    # assigns each ZCTA to a single state in its own crosswalk even though a
+    # ZIP's real-world delivery area can cross a state line, so duplicate
+    # zcta rows aren't expected -- but this is exactly the kind of assumption
+    # to check against the real response rather than trust, so: drop exact
+    # duplicates defensively and let the __main__ block's own printed row
+    # count make a silent drop visible if this assumption turns out wrong.
+    return df.drop_duplicates(subset="zcta", keep="first")
 
 
 def aggregate_zcta_to_zip3(zcta_df):
@@ -206,8 +238,13 @@ if __name__ == "__main__":
         )
     print(f"Fetching ACS {ACS_YEAR} 5-year estimates (table B03002) for every ZCTA...")
     t0 = time.time()
-    result = build_zip3_race_proxy(api_key)
-    print(f"done in {time.time() - t0:.1f}s -- {len(result):,} zip3 prefixes")
+    zcta_df = fetch_acs_zcta_race(api_key)
+    print(f"fetched {len(zcta_df):,} unique ZCTA rows in {time.time() - t0:.1f}s "
+          f"(after dropping any (zcta, state) duplicates -- see _parse_acs_response's "
+          f"docstring for why that check exists)")
+    zip3_df = aggregate_zcta_to_zip3(zcta_df)
+    result = assign_race_proxy_group(zip3_df)
+    print(f"aggregated to {len(result):,} zip3 prefixes")
     print(result["race_proxy_group"].value_counts().to_string())
     os.makedirs(os.path.dirname(DEFAULT_CACHE_PATH), exist_ok=True)
     result.to_csv(DEFAULT_CACHE_PATH, index=False)

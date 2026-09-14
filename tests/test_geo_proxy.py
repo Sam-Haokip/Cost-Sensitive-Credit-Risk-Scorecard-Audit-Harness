@@ -18,18 +18,22 @@ from fairness.geo_proxy import (
 )
 
 
-def _acs_row(zcta, total, white=0, black=0, aian=0, asian=0, nhpi=0, other_race=0, two_or_more=0, hispanic=0):
+def _acs_row(zcta, total, white=0, black=0, aian=0, asian=0, nhpi=0, other_race=0,
+             two_or_more=0, hispanic=0, state="42"):
     """One synthetic Census API data row, in the exact string-typed,
-    positional-list shape the real API returns (NAME first, geography id
-    last) -- exercises _parse_acs_response's actual column handling rather
-    than a pre-built DataFrame."""
+    positional-list shape the real API returns (NAME first, requested
+    variables, then the geography columns in "for", "in" order -- zcta then
+    state, since the real query is `for=zip code tabulation area:*&in=state:*`,
+    required because the dataset's own geography metadata marks ZCTA as
+    `"requires": ["state"]`) -- exercises _parse_acs_response's actual
+    column handling rather than a pre-built DataFrame."""
     return ["Fake ZCTA", str(total), str(white), str(black), str(aian), str(asian),
-            str(nhpi), str(other_race), str(two_or_more), str(hispanic), zcta]
+            str(nhpi), str(other_race), str(two_or_more), str(hispanic), zcta, state]
 
 
 _HEADER = ["NAME", "B03002_001E", "B03002_003E", "B03002_004E", "B03002_005E",
            "B03002_006E", "B03002_007E", "B03002_008E", "B03002_009E", "B03002_012E",
-           "zip code tabulation area"]
+           "zip code tabulation area", "state"]
 
 
 def test_parse_acs_response_renames_and_zero_pads_zcta():
@@ -39,6 +43,21 @@ def test_parse_acs_response_renames_and_zero_pads_zcta():
     assert df["total"].iloc[0] == 500
     assert df["white_nonhispanic"].iloc[0] == 400
     assert df["black_nonhispanic"].iloc[0] == 100
+    assert "state" not in df.columns  # the extra `in=state:*` column is dropped, not kept
+
+
+def test_parse_acs_response_drops_duplicate_zcta_rows():
+    """`in=state:*` returns one row per (zcta, state) -- Census's own
+    crosswalk assigns each ZCTA to a single state, so duplicates aren't
+    expected, but if the same zcta ever comes back twice (say, one that
+    genuinely straddles a state line), it must not silently double-count
+    that ZCTA's population when summed into its zip3."""
+    rows = [_HEADER,
+            _acs_row("10001", total=500, white=400, black=100, state="36"),
+            _acs_row("10001", total=500, white=400, black=100, state="34")]
+    df = _parse_acs_response(rows)
+    assert len(df) == 1
+    assert df["zcta"].tolist() == ["10001"]
 
 
 def test_parse_acs_response_treats_negative_sentinels_as_missing():
