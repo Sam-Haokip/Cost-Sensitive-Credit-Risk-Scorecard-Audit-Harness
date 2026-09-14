@@ -76,6 +76,19 @@ tens of thousands of loans per income quintile, but the smallest emp_length
 category or a group with a low base rate can see this vary considerably fold
 to fold -- gaps and costs are reported per fold, not silently pooled, so that
 variability is visible rather than averaged away.
+
+geo_race_proxy's "insufficient_data" bucket is this limitation's clearest
+example, and gets the strongest response: it's a Census DATA-QUALITY flag
+(a zip3 too small, or entirely outside ACS's ZCTA universe -- e.g. APO/FPO
+military zips), not a race/ethnicity group, and its N is a few dozen loans
+per 100k-loan test fold. The first version of this script included it as a
+group like any other; its baseline approval rate was a noisy 100% in most
+folds, and a per-group mitigation threshold fit on an even smaller
+calibration-cohort slice of it sometimes made the OVERALL demographic-parity
+gap WORSE than doing nothing -- the opposite of what a mitigation is for.
+It's excluded from the gap/mitigation analysis entirely now (see the
+__main__ block); its exclusion count is printed and written to the summary
+rather than silently dropped from the data.
 """
 import os
 
@@ -257,18 +270,40 @@ if __name__ == "__main__":
     print(f"{len(df):,} loans\n")
 
     all_rates, all_gaps = [], []
+    geo_excluded_test_total = 0
     for year, outer_train, test, fit, calib, cal_year in outer_folds(df):
         print(f"fold {year}: model fit {len(fit):,} (to {cal_year - 1}) | "
               f"calibrator/threshold {len(calib):,} ({cal_year}) | test {len(test):,} ({year})")
 
         income_calib, income_test = income_quantile_labels(calib["annual_inc"], test["annual_inc"])
         emp_calib, emp_test = emp_length_labels(calib["emp_length"]), emp_length_labels(test["emp_length"])
-        proxies = [("income_quintile", income_calib.values, income_test.values),
-                   ("emp_length", emp_calib.values, emp_test.values)]
+        keep_all_calib, keep_all_test = np.ones(len(calib), dtype=bool), np.ones(len(test), dtype=bool)
+        proxies = [("income_quintile", income_calib.values, income_test.values, keep_all_calib, keep_all_test),
+                   ("emp_length", emp_calib.values, emp_test.values, keep_all_calib, keep_all_test)]
         if geo_table is not None:
-            geo_calib = race_proxy_labels(calib["zip_code"], geo_table)
-            geo_test = race_proxy_labels(test["zip_code"], geo_table)
-            proxies.append(("geo_race_proxy", geo_calib.values, geo_test.values))
+            geo_calib_raw = race_proxy_labels(calib["zip_code"], geo_table)
+            geo_test_raw = race_proxy_labels(test["zip_code"], geo_table)
+            # "insufficient_data" is a Census-side DATA-QUALITY flag (a zip3
+            # too small, or entirely outside ACS's ZCTA universe -- e.g.
+            # APO/FPO military zips), not a race/ethnicity label, and its N
+            # here is a few dozen loans per 100k-loan test fold. Keeping it
+            # as a "group" produced exactly the pathology this excludes: its
+            # baseline approval rate was a noisy 100% in most folds (a tiny-N
+            # artifact, not a finding), and a per-group mitigation threshold
+            # fit on an even smaller calibration-cohort slice of it sometimes
+            # made the OVERALL demographic-parity gap WORSE than doing
+            # nothing -- the opposite of what a mitigation is for. Excluded
+            # from the gap/mitigation analysis; the exclusion count is
+            # printed and written to the summary so it's visible, not
+            # silently dropped from the data.
+            geo_keep_calib = (geo_calib_raw != "insufficient_data").values
+            geo_keep_test = (geo_test_raw != "insufficient_data").values
+            print(f"   geo_race_proxy: excluding {(~geo_keep_calib).sum()} calib / "
+                  f"{(~geo_keep_test).sum()} test loans with insufficient_data zip3s "
+                  f"from the fairness comparison (kept as a data-quality footnote, not a group)")
+            geo_excluded_test_total += int((~geo_keep_test).sum())
+            proxies.append(("geo_race_proxy", geo_calib_raw.values[geo_keep_calib],
+                            geo_test_raw.values[geo_keep_test], geo_keep_calib, geo_keep_test))
 
         for mname in MODELS:
             p_calib, p_test = _fit_and_calibrate(fit, calib, test, mname)
@@ -277,10 +312,12 @@ if __name__ == "__main__":
 
             shared_thr, _ = best_threshold(y_calib, p_calib, amt_calib, LGD_RATE, MARGIN_RATE)
 
-            for proxy_name, g_calib, g_test in proxies:
-                rates, gaps = run_proxy(proxy_name, g_calib, g_test, y_calib, y_test, p_calib, p_test,
-                                        amt_calib, amt_test, shared_thr, year, mname,
-                                        LGD_RATE, MARGIN_RATE)
+            for proxy_name, g_calib, g_test, mask_calib, mask_test in proxies:
+                rates, gaps = run_proxy(proxy_name, g_calib, g_test,
+                                        y_calib[mask_calib], y_test[mask_test],
+                                        p_calib[mask_calib], p_test[mask_test],
+                                        amt_calib[mask_calib], amt_test[mask_test],
+                                        shared_thr, year, mname, LGD_RATE, MARGIN_RATE)
                 all_rates.extend(rates)
                 all_gaps.extend(gaps)
 
@@ -360,7 +397,15 @@ if __name__ == "__main__":
                 "own. See fairness/geo_proxy.py's docstring for the full reasoning. "
                 f"{n_insufficient} of {len(geo_table):,} zip3 prefixes were flagged "
                 "insufficient_data (population under 500 in the ACS estimate, or no "
-                "matching ZCTA data at all) and excluded from a confident group label.\n"
+                "matching ZCTA data at all). Loans in those zip3s are excluded from the "
+                "gap/mitigation numbers above entirely, not just left unlabeled -- "
+                f"{geo_excluded_test_total} test-cohort loans across all 4 folds "
+                "(roughly 0.04% of the dataset). insufficient_data is a Census DATA-"
+                "QUALITY flag, not a race/ethnicity group, and its N (a few dozen loans "
+                "per 100k-loan fold) made it behave like one: a noisy ~100% baseline "
+                "approval rate, and a per-group mitigation threshold fit on an even "
+                "smaller calibration-cohort slice of it that sometimes made the OVERALL "
+                "demographic-parity gap WORSE than doing nothing at all.\n"
             )
 
     print(f"\nwrote {OUT_RATES}, {OUT_GAPS}, {OUT_SUMMARY}")

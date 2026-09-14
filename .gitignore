@@ -3,6 +3,7 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/processed/census_zip3_race_proxy.csv
 
 # ...but generated analysis output belongs in the repo
 !reports/**
