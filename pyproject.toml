@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+# Without this, `pytest` run from the repo root cannot import the top-level
+# packages (data, models, features, evaluation, fairness, explainability)
+# from inside tests/ -- it silently worked in every local dev environment
+# only because of a stray, never-committed tests/__init__.py left over from
+# early in the project, which is absent from a real `git clone` (and from
+# GitHub Actions' checkout). This is the actual, explicit fix.
+pythonpath = ["."]
